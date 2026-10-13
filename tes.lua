@@ -1,5 +1,5 @@
 --[[
-    EX_StealAnEgg V39 (Glass + Remote)
+    EX_StealAnEgg V40 (Auto Area)
     Catatan struktur:
       1. Konfigurasi, tema, dan tabel kata kunci (baris ~1-150)
       2. Helper, snapshot prompt, lock, proteksi karakter
@@ -27,7 +27,7 @@ pcall(function()
     end
 end)
 
-local VERSION = "V39 (Glass + Remote)"
+local VERSION = "V41 (Auto Area+)"
 local SAVE_FILE = "cfg_a1.json"
 local BASE_RADIUS = 140
 
@@ -56,12 +56,12 @@ local FILTERS = {
     { "Variant", { "Normal", "Silver", "Golden", "Rainbow", "Bloom", "Spirit Bloom", "Parasite", "Fractured", "Scrambled" } },
 }
 local EVENT_DEFS = {
+    { id = "racing", name = "Racing Event (Mounts)", desc = "Balapan tiap 30 mnt, portal muncul di salah satu biome", keywords = { "racing", "race" }, mode = "touch" },
+    { id = "hwdim", name = "Halloween Dimension (gerbang)", desc = "17-24 Okt: gerbang dimensi, telur rahasia", keywords = { "gateway", "dimension" }, mode = "touch" },
+    { id = "hwboss", name = "Halloween Boss", desc = "17-24 Okt: boss & monster dimensi", keywords = { "halloween" }, mode = "attack", tool = "bat" },
     { id = "scramble", name = "Dr. Scramble Mecha & Drone", desc = "Boss tiap 30 mnt, drop Samples", keywords = { "scramble", "mecha", "drone" }, mode = "attack", tool = "bat" },
     { id = "rift", name = "Rift & Overlord", desc = "Tiap 30 mnt, drop Boss Tokens", keywords = { "overlord", "rift" }, mode = "attack", tool = "bat" },
-    { id = "greatbloom", name = "Great Bloom", desc = "Tiap 30 mnt", keywords = { "greatbloom", "great bloom" }, mode = "collect" },
-    { id = "butterfly", name = "Butterfly Bloom", desc = "Tangkap kupu-kupu", keywords = { "butterfly" }, mode = "collect", tool = "net" },
-    { id = "frog", name = "Hungry Frog (parasit)", desc = "5 parasit = Monster Chest", keywords = { "parasite", "hungryfrog", "frog" }, mode = "collect" },
-    { id = "angdem", name = "Angels vs Demons (ring)", desc = "Kumpulkan ring tim", keywords = { "ring" }, mode = "touch" },
+    { id = "butterfly", name = "Butterfly Bloom (Enchanted Forest)", desc = "Tangkap kupu-kupu pakai Net", keywords = { "butterfly" }, mode = "collect", tool = "net" },
     { id = "admin", name = "Admin Abuse (Sammy)", desc = "Event admin mingguan", keywords = { "sammy" }, mode = "attack", tool = "bat" },
 }
 local SHOPS = {
@@ -124,9 +124,21 @@ local function newFilterSet(key)
     return out
 end
 
-local areaCenters = { Forest = Vector3.new(597, 10, -324) }
-for name, arr in pairs(S("areaCenters", {})) do
-    if type(arr) == "table" and #arr == 3 then areaCenters[name] = Vector3.new(arr[1], arr[2], arr[3]) end
+-- V40: titik tiap area dicari OTOMATIS dari nama slot telur (lihat V40.refreshAreaCenters). Tombol SET di tab AREA
+-- hanya untuk koreksi manual. Key simpanan lama "areaCenters" sengaja diabaikan (isinya bisa tercemar tebakan lama yang salah).
+local areaCenters = { Forest = Vector3.new(597, 10, -324) } -- cadangan sampai hasil otomatis ketemu
+local V40 = { areaManual = {}, areaAuto = {}, areaScanT = -100 }
+for name, arr in pairs(S("areaCentersManual", {})) do
+    if type(arr) == "table" and #arr == 3 then
+        areaCenters[name] = Vector3.new(arr[1], arr[2], arr[3]); V40.areaManual[name] = true
+    end
+end
+
+-- V41: titik otomatis yang pernah ketemu disimpan, jadi sesi berikutnya langsung tahu area yang jauh (belum ter-stream)
+for name, arr in pairs(S("areaCentersAuto", {})) do
+    if type(arr) == "table" and #arr == 3 and not V40.areaManual[name] then
+        areaCenters[name] = Vector3.new(arr[1], arr[2], arr[3]); V40.areaAuto[name] = 1; V40.areaCached = V40.areaCached or {}; V40.areaCached[name] = true
+    end
 end
 
 local config = {
@@ -139,10 +151,10 @@ local config = {
     sellFilters = newFilterSet("sellFilters"), favFilters = newFilterSet("favFilters"), favNames = S("favNames", ""),
     petPlaceFilters = newFilterSet("petPlaceFilters"), petPlaceNames = S("petPlaceNames", ""),
     petSellFilters = newFilterSet("petSellFilters"), petSellNames = S("petSellNames", ""),
-    afkSaver = false, fpsCap = S("fpsCap", 15), winW = S("winW", 430), winH = S("winH", 310),
+    afkSaver = false, fpsCap = S("fpsCap", 15), winW = S("winW", 330), winH = S("winH", 250),
     flySpeed = S("flySpeed2", 130), flyHeight = S("flyHeight", 12),
-    fxBorder = S("fxBorder", true), antiKB = S("antiKB", false), antiTrap = S("antiTrap", false),
-    antiAfk = S("antiAfk", true), pingPanel = S("pingPanel", true),
+    fxBorder = S("fxBorder", false), antiKB = S("antiKB", false), antiTrap = S("antiTrap", false),
+    antiAfk = S("antiAfk", true), pingPanel = S("pingPanel", true), autoSave = S("autoSave", true),
     removePopups = S("cleanFx", false), antiLag = S("antiLag", false),
     events = {}, auto = {
         hatch = false, place = false, fuse = false, index = false, sell = false, favorite = false,
@@ -155,14 +167,6 @@ local config = {
 }
 
 local V25 = {}
-
--- V35: TITIK BAWAAN (koordinat map sama untuk semua pemain). Isi dari tombol "Salin titik area" di tab AREA.
--- Contoh isi:  Lake = { 120, 10, -400 },  Desert = { ... },
-V25.DEFAULT_AREA_CENTERS = {
-}
-for name, arr in pairs(V25.DEFAULT_AREA_CENTERS) do
-    if not areaCenters[name] and type(arr) == "table" and #arr == 3 then areaCenters[name] = Vector3.new(arr[1], arr[2], arr[3]) end
-end
 -- V39: hasil permanen dari DEBUG > "UJI REMOTE". Format: fitur = { "nama remote persis", "bentuk argumen" }
 -- fitur: sell, favorite, claim, upgTrail, upgTreadmill, upgBase | argumen: uid, uidTrue, uidOne, uidTable, uidMap, tool, none, keyTitle, keyLower
 V25.REMOTE_FIX = {
@@ -193,7 +197,15 @@ local function saveSettings(force)
     if typeof(writefile) ~= "function" then return false end
     local function f(sets) return { Size = setToList(sets.Size), Rarity = setToList(sets.Rarity), Variant = setToList(sets.Variant) } end
     local centers = {}
-    for name, v in pairs(areaCenters) do centers[name] = { v.X, v.Y, v.Z } end
+    for name in pairs(V40.areaManual) do
+        local v = areaCenters[name]
+        if v then centers[name] = { v.X, v.Y, v.Z } end
+    end
+    local autoCenters = {}
+    for name in pairs(V40.areaAuto) do
+        local v = areaCenters[name]
+        if v and not V40.areaManual[name] then autoCenters[name] = { v.X, v.Y, v.Z } end
+    end
     local data = {
         areas = setToList(config.areas), filters = f(config.filters), placeFilters = f(config.placeFilters),
         sellFilters = f(config.sellFilters), favFilters = f(config.favFilters), favNames = config.favNames,
@@ -204,9 +216,9 @@ local function saveSettings(force)
         skipOwn = config.skipOwn, flySpeed2 = config.flySpeed, flyHeight = config.flyHeight,
         fxBorder = config.fxBorder, antiKB = config.antiKB, antiTrap = config.antiTrap,
         antiAfk = config.antiAfk, pingPanel = config.pingPanel, cleanFx = config.removePopups,
-        antiLag = config.antiLag, autoInterval = config.autoInterval,
+        antiLag = config.antiLag, autoInterval = config.autoInterval, autoSave = config.autoSave,
         eggWebhookUrl = config.eggWebhookUrl, statsWebhookUrl = config.statsWebhookUrl,
-        statsIntervalMin = config.statsIntervalMin, areaCenters = centers,
+        statsIntervalMin = config.statsIntervalMin, areaCentersManual = centers, areaCentersAuto = autoCenters,
         safeSpot = V25.manualSafe and { V25.manualSafe.X, V25.manualSafe.Y, V25.manualSafe.Z } or nil,
     }
     local okEnc, json = pcall(function() return HttpService:JSONEncode(data) end)
@@ -608,7 +620,8 @@ local function getEggRoot(prompt)
     return prompt:FindFirstAncestorOfClass("Model") or prompt.Parent
 end
 local function collectEggText(root)
-    local parts = { (root.Name:lower():gsub("(_%d+_%d+_)[^:]+(:slot_%d+)", "%1%2")) }
+    -- V40: nama area di nama slot dibuang dari teks filter (kalau tidak, rarity "Cosmic" ikut cocok dengan area Cosmic)
+    local parts = { (root.Name:gsub("^(.-_%d+_%d+_)[^:]+(:Slot_%d+)", "%1%2")):lower() }
     local function addAttrs(inst) for k, v in pairs(inst:GetAttributes()) do table.insert(parts, tostring(k):lower() .. ":" .. tostring(v):lower()) end end
     addAttrs(root)
     local count = 0
@@ -655,155 +668,109 @@ local function nearestAreaByCenter(pos)
     return nil
 end
 
--- V36: area diambil dari sumber yang bisa dipercaya saja:
---  1) segmen area di nama slot ("jenis_uid_n_AREA:Slot_n")  2) nama leluhur prompt  3) jarak ke titik area.
--- JANGAN dari isi teks telur: rarity "Cosmic" atau nama pet ("Snow Fox", "Forest Deer") bukan area telur.
-function V25.eggArea(prompt, root, pos)
-    local tok = root and root.Name:match("_%d+_%d+_([^:]+):[Ss]lot_%d+")
-    if tok then
-        local det = detectAreaFromText(norm(tok))
-        if det then return det, "slot", tok end
-    end
-    local det = detectAreaFromText(norm(collectAncestorText(prompt)))
-    if det then return det, "leluhur", tok end
-    local near = pos and nearestAreaByCenter(pos)
-    if near then return near, "jarak", tok end
-    return nil, nil, tok
+-- ==========================================
+-- V40: DETEKSI AREA DARI NAMA SLOT (bukan dari teks isi telur)
+-- Nama slot berformat "jenis_uid_n_AREA:Slot_n". Dulu area ditebak dari seluruh teks telur, sehingga rarity "Cosmic"
+-- atau nama telur ikut dikira area -> filter area salah, lalu karakter diam karena titik area tidak ada.
+-- ==========================================
+function V40.areaFromToken(token)
+    local n = norm(token)
+    if n == "" then return nil end
+    for _, nm in ipairs(AREAS) do if norm(nm) == n then return nm end end
+    for _, entry in ipairs(AREA_DETECT) do for _, key in ipairs(entry[2]) do
+        if n:find(key, 1, true) then return entry[1] end
+    end end
+    return nil
 end
-
--- V35: cari titik area DI LUAR slot telur, supaya area yang jauh / belum termuat tetap punya titik:
---  (a) ModuleScript data di ReplicatedStorage (tabel area -> posisi spawn/teleport),
---  (b) objek dunia bernama area + spawn/teleport/portal/zone yang sudah termuat.
-V25.areaSrc = V25.areaSrc or {}
-V25.POS_KEYS = { "spawn", "position", "pos", "cframe", "center", "teleport", "location", "origin", "warp" }
-function V25.toV3(v)
-    if typeof(v) == "Vector3" then return v end
-    if typeof(v) == "CFrame" then return v.Position end
-    if type(v) == "table" then
-        local x, y, z = v.X or v.x or v[1], v.Y or v.y or v[2], v.Z or v.z or v[3]
-        if type(x) == "number" and type(y) == "number" and type(z) == "number" then return Vector3.new(x, y, z) end
+function V40.areaOfRoot(root)
+    if not root then return nil end
+    local tok = root.Name:match("^.-_%d+_%d+_([^:]+):Slot_%d+")
+    if tok then
+        local a = V40.areaFromToken(tok); if a then return a end
+    end
+    for _, k in ipairs({ "Area", "AreaName", "Biome", "Zone" }) do
+        local v = root:GetAttribute(k)
+        if type(v) == "string" then
+            local a = V40.areaFromToken(v); if a then return a end
+        end
+    end
+    local a = V40.areaFromToken(root.Name); if a then return a end
+    local cur = root.Parent
+    while cur and cur ~= Workspace do
+        if cur.Name ~= "AreaEggSlotsClient" then
+            local b = V40.areaFromToken(cur.Name); if b then return b end
+        end
+        cur = cur.Parent
     end
     return nil
 end
-function V25.offerCenter(name, pos, src)
-    if not name or not pos or pos.Magnitude < 5 or pos.Y < -500 then return end
-    if V25.areaManual[name] then return end
-    local cur = V25.areaSrc[name]
-    if cur == "slot" or (cur == "data" and src ~= "slot") then return end
-    areaCenters[name] = pos; V25.areaSrc[name] = src
-    log(("Titik area %s ditemukan (%s)"):format(name, src))
-    local pin = V25.areaPins[name]
-    if pin then pcall(function() pin.Text = "AUTO"; pin.TextColor3 = THEME.good end) end
-end
-function V25.isPosKey(k)
-    if type(k) ~= "string" then return false end
-    local nk = norm(k)
-    for _, pk in ipairs(V25.POS_KEYS) do if nk:find(pk, 1, true) then return true end end
-    return false
-end
-function V25.walkAreaTable(t, depth, inherited, seen)
-    if depth > 5 or seen[t] then return end
-    seen[t] = true
-    for k, v in pairs(t) do
-        local an = type(k) == "string" and detectAreaFromText(norm(k)) or nil
-        local name = an or inherited
-        if name then
-            local direct = V25.toV3(v)
-            if direct and (an or V25.isPosKey(k)) then
-                V25.offerCenter(name, direct, "data")
-            end
-        end
-        if type(v) == "table" and not V25.toV3(v) then V25.walkAreaTable(v, depth + 1, name, seen) end
-    end
-end
-V25.discoverT = 0
-function V25.discoverAreaCenters()
-    V25.discoverT = os.clock()
-    -- (a) data ModuleScript
-    local RS = game:GetService("ReplicatedStorage")
-    local hits = { "area", "biome", "zone", "world", "map", "teleport", "location", "egg" }
-    local mods, n = {}, 0
-    for _, d in ipairs(RS:GetDescendants()) do
-        if d:IsA("ModuleScript") then
-            local nm = norm(d.Name)
-            for _, h in ipairs(hits) do
-                if nm:find(h, 1, true) then n += 1; if n <= 40 then table.insert(mods, d) end; break end
-            end
-        end
-    end
-    for _, m in ipairs(mods) do
-        task.spawn(function()
-            local ok, res = pcall(require, m)
-            if ok and type(res) == "table" then pcall(V25.walkAreaTable, res, 0, nil, {}) end
-        end)
-    end
-    -- (b) objek dunia
-    local eggFolder = Workspace:FindFirstChild("AreaEggSlotsClient")
-    local ctx = { "spawn", "teleport", "portal", "warp", "zone", "biome", "gate", "pad" }
-    for _, d in ipairs(Snapshot.get()) do
-        if d.Parent and (d:IsA("SpawnLocation") or d:IsA("Model") or d:IsA("BasePart")) and not (eggFolder and d:IsDescendantOf(eggFolder)) then
-            local nm = norm(d.Name)
-            local det = detectAreaFromText(nm)
-            if det then
-                local ok = d:IsA("SpawnLocation")
-                if not ok then
-                    local pn = norm(d.Parent.Name)
-                    for _, c in ipairs(ctx) do if nm:find(c, 1, true) or pn:find(c, 1, true) then ok = true; break end end
-                end
-                if ok and not Players:GetPlayerFromCharacter(d) then V25.offerCenter(det, getInstPosition(d), "data") end
-            end
-        end
-    end
-end
-
--- V37: titik pusat area dipelajari OTOMATIS dari slot telur (AreaEggSlotsClient).
--- Slot dikelompokkan per area (segmen area di nama slot), lalu dipakai slot terdekat ke rata-rata posisinya
--- (titik pasti ada pijakan). Titik yang di-SET manual tidak pernah ditimpa.
-V25.areaManual = V25.areaManual or {}
-V25.areaPins = V25.areaPins or {}
-V25.areaLearnT = 0
-function V25.learnAreaCenters(force)
-    if not force and os.clock() - V25.areaLearnT < 8 then return 0 end
-    V25.areaLearnT = os.clock()
+-- baca semua slot di AreaEggSlotsClient, kelompokkan per area, pakai slot yang paling dekat rata-rata sebagai titik area
+function V40.refreshAreaCenters(force)
+    if os.clock() - V40.areaScanT < (force and 5 or 30) then return end
+    V40.areaScanT = os.clock()
     local folder = Workspace:FindFirstChild("AreaEggSlotsClient")
-    if not folder then return 0 end
-    local groups = {}
+    if not folder then return end
+    local groups, n = {}, 0
     for _, ch in ipairs(folder:GetChildren()) do
-        local tok = ch.Name:match("_%d+_%d+_([^:]+):[Ss]lot_%d+")
-        local det = tok and detectAreaFromText(norm(tok))
-        if det and not V25.areaManual[det] then
+        n += 1; if n > 4000 then break end
+        local area = V40.areaOfRoot(ch)
+        if area then
             local pos = getInstPosition(ch)
-            if pos and pos.Y > Workspace.FallenPartsDestroyHeight + 30 then
-                local g = groups[det]; if not g then g = { list = {}, sum = Vector3.zero }; groups[det] = g end
-                table.insert(g.list, pos); g.sum += pos
+            if pos then
+                local g = groups[area]; if not g then g = {}; groups[area] = g end
+                g[#g + 1] = pos
             end
         end
     end
-    local learned = 0
-    for name, g in pairs(groups) do
-        local avg = g.sum / #g.list
-        local best, bd = g.list[1], math.huge
-        for _, p in ipairs(g.list) do
-            local d = (p - avg).Magnitude
-            if d < bd then best, bd = p, d end
-        end
-        local old = areaCenters[name]
-        if not old or V25.areaSrc[name] ~= "slot" or (old - best).Magnitude > 25 then
-            areaCenters[name] = best; V25.areaSrc[name] = "slot"; learned += 1
-            log(("Titik area %s dipelajari otomatis (%d slot telur)"):format(name, #g.list))
-            local pin = V25.areaPins[name]
-            if pin then pcall(function() pin.Text = "AUTO"; pin.TextColor3 = THEME.good end) end
+    for area, list in pairs(groups) do
+        if not V40.areaManual[area] then
+            local sx, sy, sz = 0, 0, 0
+            for _, p in ipairs(list) do sx += p.X; sy += p.Y; sz += p.Z end
+            local mean = Vector3.new(sx / #list, sy / #list, sz / #list)
+            local best, bd = list[1], math.huge
+            for _, p in ipairs(list) do
+                local d = (p - mean).Magnitude
+                if d < bd then best, bd = p, d end
+            end
+            if not V40.areaAuto[area] then log(("Titik area %s ketemu otomatis (%d slot)"):format(area, #list)) end
+            areaCenters[area] = best; V40.areaAuto[area] = #list
+            if V40.areaCached then V40.areaCached[area] = nil end
         end
     end
-    -- area terpilih yang masih kosong -> cari dari data game / objek dunia (maks 1x per 45 dtk)
-    if os.clock() - V25.discoverT > 45 then
-        local missing = false
-        for _, nm in ipairs(AREAS) do
-            if (force or config.areas[nm]) and not areaCenters[nm] then missing = true; break end
-        end
-        if missing then pcall(V25.discoverAreaCenters) end
+    V40.scanLandmarks(groups)
+end
+-- V41: area yang slot telurnya belum ter-stream dicari lewat objek bernama persis sama dengan area (model/folder/part di Workspace)
+function V40.scanLandmarks(groups)
+    local need = {}
+    for _, nm in ipairs(AREAS) do
+        if not groups[nm] and not V40.areaManual[nm] and (not areaCenters[nm] or (V40.areaCached and V40.areaCached[nm])) then need[norm(nm)] = nm end
     end
-    return learned
+    if next(need) == nil then return end
+    if os.clock() - (V40.landT or -100) < 60 then return end
+    V40.landT = os.clock()
+    local folder = Workspace:FindFirstChild("AreaEggSlotsClient")
+    local plots = Workspace:FindFirstChild("Plots")
+    local found = {}
+    for _, d in ipairs(Snapshot.get()) do
+        if d.Parent and (d:IsA("Model") or d:IsA("Folder") or d:IsA("BasePart")) then
+            local nm = need[norm(d.Name)]
+            if nm and not found[nm] and not (folder and d:IsDescendantOf(folder)) and not (plots and d:IsDescendantOf(plots))
+                and not d:IsDescendantOf(player.Character or Workspace) and not Players:GetPlayerFromCharacter(d) then
+                local pos = getInstPosition(d)
+                if not pos and d:IsA("Folder") then
+                    local bp = d:FindFirstChildWhichIsA("BasePart", true); pos = bp and bp.Position
+                end
+                if pos and pos.Y > Workspace.FallenPartsDestroyHeight + 40 then found[nm] = pos end
+            end
+        end
+    end
+    for nm, pos in pairs(found) do
+        if not areaCenters[nm] or (V40.areaCached and V40.areaCached[nm]) then
+            areaCenters[nm] = pos; V40.areaAuto[nm] = 1
+            if V40.areaCached then V40.areaCached[nm] = nil end
+            log(("Titik area %s ketemu otomatis (penanda area)"):format(nm))
+        end
+    end
 end
 
 local VARIANT_KEYS = { "silver", "golden", "rainbow", "bloom", "parasite", "monstrous", "fractured", "scrambled" }
@@ -859,6 +826,7 @@ local function findTarget(hrp, silent)
     local best
     local filterOn = config.targetMode == "Filter" and hasAnyFilter(config.filters)
     local areaOn = next(config.areas) ~= nil
+    V40.refreshAreaCenters()
     local cands = {}
     for _, prompt in ipairs(collectEggPrompts()) do
         c.total += 1
@@ -880,15 +848,11 @@ local function findTarget(hrp, silent)
             local text = filterOn and collectEggText(root) or nil
             local area = nil; local pass = true
             if areaOn then
-                local det, src, tok = V25.eggArea(prompt, root, pos)
-                if det and src == "slot" and not areaCenters[det] then areaCenters[det] = pos end
-                area = det
-                if not area or not config.areas[area] then
-                    c.area += 1; pass = false
-                    if not c.areaSample then
-                        c.areaSample = ("%s | segmen area=%s | terbaca=%s (%s)"):format(root.Name, tostring(tok), tostring(det), tostring(src))
-                    end
-                end
+                -- V40: area dibaca dari nama slot telur, bukan dari teks isi telur
+                local det = V40.areaOfRoot(root)
+                if det and not areaCenters[det] then areaCenters[det] = pos; V40.areaAuto[det] = 1 end
+                area = det or nearestAreaByCenter(pos)
+                if not area or not config.areas[area] then c.area += 1; pass = false end
             end
             if pass and filterOn and not passesFilters(root, text, config.filters) then
                 c.filtered += 1; pass = false
@@ -905,18 +869,18 @@ local function findTarget(hrp, silent)
         end
     end
     if best and not best.area then
-        best.area = (V25.eggArea(best.prompt, best.root, best.pos))
+        best.area = V40.areaOfRoot(best.root) or nearestAreaByCenter(best.pos)
     end
     if not best and not silent and os.clock() - lastNoTargetLog > 3 then
         lastNoTargetLog = os.clock()
         log(("Tidak ada target | prompt %d | milik sendiri %d | filter %d | area %d | tanpa posisi %d | diblok %d")
             :format(c.total, c.mine, c.filtered, c.area, c.nopos, c.banned))
-        if c.area > 0 and c.areaSample then
-            log("Contoh telur ditolak filter AREA -> " .. c.areaSample)
-        end
         if c.filtered > 0 and c.sample then
             log("Contoh telur ditolak filter -> " .. c.sample)
             log("Jika rarity/variant tidak muncul di teks itu, filter tidak bisa membacanya. Coba mode 'Semua telur' atau kirim teks ini.")
+        end
+        if next(config.areas) ~= nil and not config.legit and c.area > 0 and c.area == c.total - c.mine - c.nopos - c.banned then
+            log("Semua telur yang terlihat ada di area yang TIDAK dipilih. Karakter akan menuju area yang dipilih.")
         end
         if c.total > 0 and c.mine == c.total then
             log("Semua telur dianggap milik sendiri. Matikan 'Lewati telur milik sendiri' di tab Main.")
@@ -2024,11 +1988,15 @@ local function waitForTarget(hrp, alive)
     if target then return target end
     if config.legit then return nil end
     local areaOn = next(config.areas) ~= nil
-    pcall(V25.learnAreaCenters)
     if os.clock() - lastSweep < (areaOn and 2 or 90) then return nil end
     lastSweep = os.clock()
     local visit, missing = {}, {}
     if areaOn then
+        local lack = false
+        for name in pairs(config.areas) do
+            if not V40.areaManual[name] and not V40.areaAuto[name] then lack = true end
+        end
+        if lack then V40.refreshAreaCenters(true) end
         for name in pairs(config.areas) do
             if areaCenters[name] then table.insert(visit, { name = name, pos = areaCenters[name] })
             else table.insert(missing, name) end
@@ -2040,10 +2008,10 @@ local function waitForTarget(hrp, alive)
     if #missing > 0 and os.clock() - lastMissingLog > 30 then
         lastMissingLog = os.clock()
         table.sort(missing)
-        log("Area belum punya titik: " .. table.concat(missing, ", ") .. ". Belum ada slot telur area itu yang termuat; dekati area itu sekali atau tekan SET di tab AREA saat berdiri di sana.")
+        log("Titik area belum ketemu otomatis: " .. table.concat(missing, ", ") .. " (slot telurnya belum terbaca). Jalan ke area itu sebentar, atau buka tab AREA lalu tekan SET saat berdiri di sana.")
     end
     if #visit == 0 then
-        if areaOn then setStatus("Area belum di-SET", THEME.warn) end
+        if areaOn then setStatus("Titik area belum ketemu", THEME.warn) end
         return nil
     end
     local picked = {}
@@ -3234,8 +3202,7 @@ do
             local rar = hitsOf(root, text, "Rarity")
             local var = hitsOf(root, text, "Variant")
             local siz = hitsOf(root, text, "Size")
-            local aDet, aSrc = V25.eggArea(e.p, root, e.pos)
-            local area = aDet and (aDet .. (aSrc == "jarak" and "~" or "")) or "?"
+            local area = V40.areaOfRoot(root) or nearestAreaByCenter(e.pos) or "?"
             local verdict = filterOn and (passesFilters(root, text, config.filters) and "LOLOS" or "TIDAK") or "-"
             table.insert(lines, ("#%d %s | %s | %s | %s | %d stud | %s"):format(
                 i, #rar > 0 and table.concat(rar, "/") or "rarity ?",
@@ -4107,7 +4074,7 @@ do
     -- 8) Event / boss (Dr. Scramble Mecha & Drone, dll) + timer di GUI
     function V25.scanEvents(dbg)
         local hrp = getHRP()
-        local keys = { "scramble", "mecha", "drone", "boss", "overlord", "meteor", "event" }
+        local keys = { "scramble", "mecha", "drone", "boss", "overlord", "meteor", "event", "race", "racing", "halloween", "gateway", "dimension", "sammy", "butterfly" }
         dbg("== SCAN EVENT / BOSS ==")
         dbg("[DUNIA] model yang cocok:")
         local n = 0
@@ -4584,6 +4551,7 @@ do
 end
 
 local function cleanup()
+    if config.autoSave then pcall(saveSettings, false) end
     uiAlive = false
     if V25.hideGuiOn then pcall(V25.setHideAllGui, false) end
     config.running = false; config.treadmillIdle = false
@@ -4618,9 +4586,9 @@ local EX_STEAL_EGG_CLEANUP = cleanup
 local function buildUI()
     local camera = Workspace.CurrentCamera
     local vp = camera and camera.ViewportSize or Vector2.new(900, 600)
-    local W = math.max(300, math.min(config.winW, vp.X - 16))
-    local H = math.max(230, math.min(config.winH, vp.Y - 16))
-    local SIDE = 86
+    local W = math.max(260, math.min(config.winW, vp.X - 16))
+    local H = math.max(200, math.min(config.winH, vp.Y - 16))
+    local SIDE = 58
     local FONT_B, FONT_M, FONT_R = Enum.Font.GothamBold, Enum.Font.GothamMedium, Enum.Font.Gotham
     local WHITE = Color3.new(1, 1, 1)
     local orderCounter = 0
@@ -4670,95 +4638,29 @@ local function buildUI()
     local win = new("Frame", {
         Name = "Window", Size = UDim2.fromOffset(W, H),
         Position = UDim2.new(0.5, -W / 2, 0.5, -H / 2),
-        BackgroundColor3 = Color3.fromRGB(14, 6, 28), BackgroundTransparency = 0.25,
+        BackgroundColor3 = Color3.fromRGB(14, 6, 28), BackgroundTransparency = 1,
         BorderSizePixel = 0, ClipsDescendants = true,
     }, sg)
     corner(win, 12)
     local winStroke = new("UIStroke", { Color = WHITE, Thickness = 1.5, Transparency = 0.25 }, win)
-    local strokeGrad = new("UIGradient", {
-        Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, THEME.accent),
-            ColorSequenceKeypoint.new(0.5, THEME.accent2),
-            ColorSequenceKeypoint.new(1, Color3.fromRGB(70, 20, 130)),
-        }),
-    }, winStroke)
+    winStroke.Color = THEME.accent2
+    winStroke.Thickness = 1
+    winStroke.Transparency = 0.35
 
-    -- Background: Frame + UIGradient animasi (tanpa file/asset eksternal) + orb galaksi ungu
+
+    -- Background: satu lapis ungu transparan (polos)
     local bh = { rings = {}, stars = nil, core = nil, coreStroke = nil }
     local bgRoot = new("Frame", {
         Name = "GlassBG", Size = UDim2.new(1, 0, 1, 0),
-        BackgroundColor3 = Color3.fromRGB(10, 4, 22), BackgroundTransparency = 0.1,
+        BackgroundColor3 = Color3.fromRGB(88, 34, 160), BackgroundTransparency = 0.4,
         BorderSizePixel = 0, ClipsDescendants = true, ZIndex = -5,
     }, win)
     corner(bgRoot, 12)
-    do
-        -- gradient animasi (diputar di loop RenderStepped lewat bh.rings)
-        local gradFrame = new("Frame", {
-            Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = WHITE, BackgroundTransparency = 0.25,
-            BorderSizePixel = 0, ZIndex = -4,
-        }, bgRoot)
-        corner(gradFrame, 12)
-        local gradBg = new("UIGradient", {
-            Color = ColorSequence.new({
-                ColorSequenceKeypoint.new(0, Color3.fromRGB(18, 6, 40)),
-                ColorSequenceKeypoint.new(0.5, Color3.fromRGB(95, 30, 170)),
-                ColorSequenceKeypoint.new(1, Color3.fromRGB(14, 4, 32)),
-            }),
-        }, gradFrame)
-        table.insert(bh.rings, { grad = gradBg, speed = 14 })
-        -- orb ungu bercahaya + bebatuan (statis, hampir tanpa biaya)
-        local function disc(size, color, transp, z, px, py)
-            local f = new("Frame", {
-                Size = UDim2.fromOffset(size, size), AnchorPoint = Vector2.new(0.5, 0.5),
-                Position = UDim2.new(px or 0.55, 0, py or 0.38, 0),
-                BackgroundColor3 = color, BackgroundTransparency = transp,
-                BorderSizePixel = 0, ZIndex = z,
-            }, bgRoot)
-            new("UICorner", { CornerRadius = UDim.new(0.5, 0) }, f)
-            return f
-        end
-        local D = math.max(W, H)
-        disc(D * 1.1, Color3.fromRGB(70, 20, 140), 0.8, -4)
-        disc(D * 0.7, Color3.fromRGB(150, 50, 230), 0.72, -4)
-        disc(D * 0.4, Color3.fromRGB(210, 120, 255), 0.55, -4)
-        bh.core = disc(D * 0.22, Color3.fromRGB(200, 90, 255), 0.05, -3)
-        bh.coreStroke = new("UIStroke", { Thickness = 3, Color = Color3.fromRGB(240, 190, 255), Transparency = 0.2 }, bh.core)
-        local rr = Random.new(5)
-        for _ = 1, 16 do
-            local sz = rr:NextInteger(10, 34)
-            local rock = new("Frame", {
-                Size = UDim2.fromOffset(sz, math.floor(sz * rr:NextNumber(0.6, 0.9))),
-                AnchorPoint = Vector2.new(0.5, 0.5),
-                Position = UDim2.new(rr:NextNumber(0.02, 0.98), 0, rr:NextNumber(0.62, 1.02), 0),
-                BackgroundColor3 = Color3.fromRGB(rr:NextInteger(26, 44), rr:NextInteger(10, 22), rr:NextInteger(48, 78)),
-                BorderSizePixel = 0, Rotation = rr:NextInteger(0, 360), ZIndex = -3,
-            }, bgRoot)
-            new("UICorner", { CornerRadius = UDim.new(0.4, 0) }, rock)
-            new("UIStroke", { Color = Color3.fromRGB(150, 70, 230), Thickness = 1, Transparency = 0.5 }, rock)
-        end
-    end
-    -- tint agar teks tetap terbaca
-    new("Frame", {
-        Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.fromRGB(8, 3, 18),
-        BackgroundTransparency = 0.5, BorderSizePixel = 0, ZIndex = -2,
-    }, bgRoot)
-    -- lapisan kaca (frosted): kilau putih tipis dari atas
-    local glassSheen = new("Frame", {
-        Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = WHITE,
-        BackgroundTransparency = 0, BorderSizePixel = 0, ZIndex = -1,
-    }, bgRoot)
-    new("UIGradient", {
-        Rotation = 70,
-        Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.82), NumberSequenceKeypoint.new(0.35, 0.95),
-            NumberSequenceKeypoint.new(1, 0.985),
-        }),
-    }, glassSheen)
 
-    local header = new("Frame", { Size = UDim2.new(1, 0, 0, 32), BackgroundTransparency = 1 }, win)
+    local header = new("Frame", { Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1 }, win)
     local titleLbl = new("TextLabel", {
         Size = UDim2.new(1, -86, 1, -4), Position = UDim2.new(0, 12, 0, 0),
-        BackgroundTransparency = 1, Text = "Options",
+        BackgroundTransparency = 1, Text = "Vura",
         TextColor3 = WHITE, TextScaled = true, Font = FONT_B,
         TextXAlignment = Enum.TextXAlignment.Left,
     }, header)
@@ -4771,7 +4673,7 @@ local function buildUI()
         }),
     }, titleLbl)
     local divider = new("Frame", {
-        Size = UDim2.new(1, -24, 0, 1), Position = UDim2.new(0, 12, 0, 32),
+        Size = UDim2.new(1, -24, 0, 1), Position = UDim2.new(0, 12, 0, 26),
         BackgroundColor3 = WHITE, BackgroundTransparency = 0.35, BorderSizePixel = 0,
     }, win)
     corner(divider, 2)
@@ -4860,7 +4762,7 @@ local function buildUI()
     end
     makeDraggable(header, win)
 
-    local MIN_W, MIN_H = 300, 230
+    local MIN_W, MIN_H = 260, 200
     local grip = new("TextButton", {
         Name = "ResizeGrip", Size = UDim2.fromOffset(30, 30),
         Position = UDim2.new(1, -30, 1, -30), BackgroundTransparency = 1,
@@ -4903,7 +4805,7 @@ local function buildUI()
     do
         local DARK = Color3.fromRGB(6, 3, 14)
         icon = new("TextButton", {
-            Name = "EXIcon", Size = UDim2.fromOffset(60, 60),
+            Name = "EXIcon", Size = UDim2.fromOffset(40, 40),
             Position = UDim2.new(0, 24, 0, 60), BackgroundTransparency = 1,
             Text = "", AutoButtonColor = false, Visible = false,
         }, sg)
@@ -4935,7 +4837,7 @@ local function buildUI()
         new("UICorner", { CornerRadius = UDim.new(0.5, 0) }, shade)
         new("TextLabel", {
             Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = "V",
-            TextColor3 = WHITE, TextSize = 18, Font = FONT_B,
+            TextColor3 = WHITE, TextSize = 14, Font = FONT_B,
             TextStrokeColor3 = THEME.accent, TextStrokeTransparency = 0.3, ZIndex = 5,
         }, disk)
     end
@@ -4959,7 +4861,7 @@ local function buildUI()
                 BorderSizePixel = 0, Active = true, ZIndex = 200,
             }, win)
             local box = new("Frame", {
-                Size = UDim2.fromOffset(250, 118), Position = UDim2.new(0.5, -125, 0.5, -59),
+                Size = UDim2.fromOffset(220, 104), Position = UDim2.new(0.5, -110, 0.5, -52),
                 BackgroundColor3 = Color3.fromRGB(22, 10, 42), BackgroundTransparency = 0.05,
                 BorderSizePixel = 0, ZIndex = 201,
             }, confirmFrame)
@@ -4968,16 +4870,16 @@ local function buildUI()
             new("TextLabel", {
                 Size = UDim2.new(1, -20, 0, 52), Position = UDim2.fromOffset(10, 8),
                 BackgroundTransparency = 1, Text = "Apakah anda yakin mau menutup Vura Script?",
-                TextColor3 = WHITE, TextSize = 13, Font = FONT_B, TextWrapped = true, ZIndex = 202,
+                TextColor3 = WHITE, TextSize = 12, Font = FONT_B, TextWrapped = true, ZIndex = 202,
             }, box)
             local yes = new("TextButton", {
-                Size = UDim2.fromOffset(104, 28), Position = UDim2.new(0, 12, 1, -40),
+                Size = UDim2.fromOffset(92, 26), Position = UDim2.new(0, 10, 1, -34),
                 BackgroundColor3 = THEME.bad, Text = "Ya, tutup",
                 TextColor3 = WHITE, TextSize = 12, Font = FONT_B, ZIndex = 202,
             }, box)
             corner(yes, 6)
             local no = new("TextButton", {
-                Size = UDim2.fromOffset(104, 28), Position = UDim2.new(1, -116, 1, -40),
+                Size = UDim2.fromOffset(92, 26), Position = UDim2.new(1, -102, 1, -34),
                 BackgroundColor3 = THEME.accent, Text = "Batal",
                 TextColor3 = WHITE, TextSize = 12, Font = FONT_B, ZIndex = 202,
             }, box)
@@ -5113,13 +5015,13 @@ local function buildUI()
     end
 
     local side = new("ScrollingFrame", {
-        Size = UDim2.new(0, SIDE, 1, -42), Position = UDim2.new(0, 6, 0, 38),
+        Size = UDim2.new(0, SIDE, 1, -34), Position = UDim2.new(0, 5, 0, 30),
         BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 2,
         CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
     }, win)
-    new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }, side)
+    new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }, side)
     local content = new("Frame", {
-        Size = UDim2.new(1, -(SIDE + 18), 1, -42), Position = UDim2.new(0, SIDE + 12, 0, 38),
+        Size = UDim2.new(1, -(SIDE + 14), 1, -34), Position = UDim2.new(0, SIDE + 9, 0, 30),
         BackgroundTransparency = 1,
     }, win)
 
@@ -5184,23 +5086,23 @@ local function buildUI()
     end
     local function addTab(name)
         local btn = new("TextButton", {
-            Size = UDim2.new(1, -4, 0, 28), BackgroundColor3 = THEME.card, BackgroundTransparency = 0.55, Text = name,
-            TextColor3 = THEME.sub, TextSize = 10, TextScaled = true, Font = FONT_B, AutoButtonColor = false,
+            Size = UDim2.new(1, -3, 0, 22), BackgroundColor3 = THEME.card, BackgroundTransparency = 0.55, Text = name,
+            TextColor3 = THEME.sub, TextSize = 9, TextScaled = true, Font = FONT_B, AutoButtonColor = false,
         }, side)
         corner(btn, 7)
         local tabStroke = new("UIStroke", { Color = THEME.off, Thickness = 1, Transparency = 0.2,
             ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, btn)
-        new("UITextSizeConstraint", { MaxTextSize = 10, MinTextSize = 6 }, btn)
-        new("UIPadding", { PaddingLeft = UDim.new(0, 26), PaddingRight = UDim.new(0, 3) }, btn)
-        local paintIcon = buildTabIcon(btn, name)
+        new("UITextSizeConstraint", { MaxTextSize = 9, MinTextSize = 6 }, btn)
+        new("UIPadding", { PaddingLeft = UDim.new(0, 3), PaddingRight = UDim.new(0, 3) }, btn)
+        local paintIcon = nil
         local page = new("ScrollingFrame", {
             Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
-            ScrollBarThickness = 4, CanvasSize = UDim2.new(),
+            ScrollBarThickness = 3, CanvasSize = UDim2.new(),
             AutomaticCanvasSize = Enum.AutomaticSize.Y, Visible = false,
         }, content)
-        new("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, page)
-        new("UIPadding", { PaddingRight = UDim.new(0, 8), PaddingBottom = UDim.new(0, 12) }, page)
-        local t = { btn = btn, page = page, stroke = tabStroke, paintIcon = paintIcon }
+        new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }, page)
+        new("UIPadding", { PaddingRight = UDim.new(0, 6), PaddingBottom = UDim.new(0, 8) }, page)
+        local t = { name = name, btn = btn, page = page, stroke = tabStroke, paintIcon = paintIcon }
         table.insert(tabs, t)
         btn.MouseButton1Click:Connect(function() selectTab(t) end)
         return page
@@ -5219,12 +5121,49 @@ local function buildUI()
             TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = true,
         }, parent)
     end
+    local headerMeta = {}
     local function section(parent, text)
-        local l = label(parent, text, 11, THEME.accent2, FONT_B)
-        l.Size = UDim2.new(1, 0, 0, 18); return l
+        local b = new("TextButton", {
+            Size = UDim2.new(1, 0, 0, 20), BackgroundColor3 = THEME.off, BackgroundTransparency = 0.45,
+            Text = "v  " .. text, TextColor3 = THEME.accent2, TextSize = 10, Font = FONT_B,
+            TextXAlignment = Enum.TextXAlignment.Left, AutoButtonColor = false,
+        }, parent)
+        corner(b, 5)
+        new("UIPadding", { PaddingLeft = UDim.new(0, 8) }, b)
+        headerMeta[b] = { btn = b, text = text }
+        return b
+    end
+    -- kelompokkan isi tiap halaman di bawah judul section; klik judul = lipat/buka
+    local function applyCollapse()
+        for _, t in ipairs(tabs) do
+            local items = {}
+            for _, ch in ipairs(t.page:GetChildren()) do
+                if ch:IsA("GuiObject") then table.insert(items, ch) end
+            end
+            table.sort(items, function(a, b) return a.LayoutOrder < b.LayoutOrder end)
+            local groups, cur = {}, nil
+            for _, it in ipairs(items) do
+                local meta = headerMeta[it]
+                if meta then
+                    cur = { meta = meta, members = {} }
+                    table.insert(groups, cur)
+                elseif cur then
+                    table.insert(cur.members, it)
+                end
+            end
+            for gi, g in ipairs(groups) do
+                g.open = (t.name ~= "MAIN") or gi <= 2
+                local function paint()
+                    g.meta.btn.Text = (g.open and "v  " or ">  ") .. g.meta.text
+                    for _, m in ipairs(g.members) do m.Visible = g.open end
+                end
+                paint()
+                g.meta.btn.MouseButton1Click:Connect(function() g.open = not g.open; paint() end)
+            end
+        end
     end
     local function note(parent, text)
-        local l = label(parent, text, 11, THEME.sub)
+        local l = label(parent, text, 10, THEME.sub)
         l.Size = UDim2.new(1, 0, 0, 0); l.AutomaticSize = Enum.AutomaticSize.Y; return l
     end
     local function safeCall(cb, ...)
@@ -5233,39 +5172,40 @@ local function buildUI()
     end
     local function buttonRow(parent, text, cb, color)
         local b = new("TextButton", {
-            Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = color or THEME.accent,
+            Size = UDim2.new(1, 0, 0, 24), BackgroundColor3 = color or THEME.accent,
             BackgroundTransparency = 0.25, Text = text, TextColor3 = WHITE,
-            TextSize = 11, Font = FONT_B, AutoButtonColor = true,
+            TextSize = 10, Font = FONT_B, AutoButtonColor = true,
         }, parent)
         corner(b, 6)
         b.MouseButton1Click:Connect(function() safeCall(cb, b) end)
         return b
     end
     local function toggleRow(parent, text, default, cb, subText, reserve)
-        local h = subText and 44 or 34
+        subText = nil
+        local h = 26
         local row = card(parent, h)
-        local lblW = 62 + (reserve or 0)
-        local lbl = label(row, text, 11, THEME.text, FONT_M)
-        lbl.Size = UDim2.new(1, -lblW, 0, subText and 22 or h)
-        lbl.Position = UDim2.new(0, 10, 0, subText and 3 or 0)
+        local lblW = 50 + (reserve or 0)
+        local lbl = label(row, text, 10, THEME.text, FONT_M)
+        lbl.Size = UDim2.new(1, -lblW, 0, subText and 16 or h)
+        lbl.Position = UDim2.new(0, 8, 0, subText and 2 or 0)
         if subText then
-            local sl = label(row, subText, 9, THEME.sub)
-            sl.Size = UDim2.new(1, -lblW, 0, 14); sl.Position = UDim2.new(0, 10, 0, 25)
+            local sl = label(row, subText, 8, THEME.sub)
+            sl.Size = UDim2.new(1, -lblW, 0, 12); sl.Position = UDim2.new(0, 8, 0, 19)
             sl.TextWrapped = false; sl.TextTruncate = Enum.TextTruncate.AtEnd
         end
         local sw = new("TextButton", {
-            Size = UDim2.fromOffset(38, 20), Position = UDim2.new(1, -48, 0.5, -10),
+            Size = UDim2.fromOffset(30, 16), Position = UDim2.new(1, -38, 0.5, -8),
             BackgroundColor3 = THEME.off, Text = "", AutoButtonColor = false,
         }, row)
-        corner(sw, 10)
+        corner(sw, 8)
         local knob = new("Frame", {
-            Size = UDim2.fromOffset(14, 14), Position = UDim2.new(0, 3, 0.5, -7),
+            Size = UDim2.fromOffset(12, 12), Position = UDim2.new(0, 2, 0.5, -6),
             BackgroundColor3 = WHITE, BorderSizePixel = 0,
         }, sw)
-        corner(knob, 7)
+        corner(knob, 6)
         local isOn = default and true or false
         local function paint(animate)
-            local kp = isOn and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
+            local kp = isOn and UDim2.new(1, -14, 0.5, -6) or UDim2.new(0, 2, 0.5, -6)
             local col = isOn and THEME.accent or THEME.off
             if animate then
                 TweenService:Create(knob, TweenInfo.new(0.15), { Position = kp }):Play()
@@ -5279,9 +5219,9 @@ local function buildUI()
         return { row = row, set = function(v) isOn = v and true or false; paint(false) end, get = function() return isOn end }
     end
     local function choiceRow(parent, title, options, current, cb)
-        local row = card(parent, 58)
-        local t = label(row, title, 11, THEME.sub, FONT_M)
-        t.Size = UDim2.new(1, -20, 0, 16); t.Position = UDim2.new(0, 10, 0, 4)
+        local row = card(parent, 44)
+        local t = label(row, title, 10, THEME.sub, FONT_M)
+        t.Size = UDim2.new(1, -16, 0, 14); t.Position = UDim2.new(0, 8, 0, 3)
         local btns = {}; local n = #options
         local function paint(val)
             for v, b in pairs(btns) do
@@ -5292,9 +5232,9 @@ local function buildUI()
         end
         for i, opt in ipairs(options) do
             local b = new("TextButton", {
-                Size = UDim2.new(1 / n, -8, 0, 26), Position = UDim2.new((i - 1) / n, 6, 0, 24),
+                Size = UDim2.new(1 / n, -6, 0, 22), Position = UDim2.new((i - 1) / n, 4, 0, 19),
                 BackgroundColor3 = THEME.off, Text = opt[2], TextColor3 = THEME.sub,
-                TextSize = 11, Font = FONT_B, AutoButtonColor = false,
+                TextSize = 10, Font = FONT_B, AutoButtonColor = false,
             }, row)
             corner(b, 5); btns[opt[1]] = b
             b.MouseButton1Click:Connect(function() paint(opt[1]); safeCall(cb, opt[1]) end)
@@ -5303,36 +5243,36 @@ local function buildUI()
         return { paint = paint }
     end
     local function stepperRow(parent, title, value, minV, maxV, step, cb, suffix)
-        local row = card(parent, 34)
-        local t = label(row, title, 12, THEME.text, FONT_M)
-        t.Size = UDim2.new(1, -126, 1, 0); t.Position = UDim2.new(0, 10, 0, 0)
+        local row = card(parent, 26)
+        local t = label(row, title, 10, THEME.text, FONT_M)
+        t.Size = UDim2.new(1, -112, 1, 0); t.Position = UDim2.new(0, 8, 0, 0)
         local val = math.clamp(tonumber(value) or minV, minV, maxV)
         local vl = new("TextLabel", {
-            Size = UDim2.fromOffset(46, 24), Position = UDim2.new(1, -86, 0.5, -12),
-            BackgroundTransparency = 1, TextColor3 = THEME.accent2, TextSize = 12, Font = FONT_B, Text = "",
+            Size = UDim2.fromOffset(44, 18), Position = UDim2.new(1, -76, 0.5, -9),
+            BackgroundTransparency = 1, TextColor3 = THEME.accent2, TextSize = 10, Font = FONT_B, Text = "",
         }, row)
         local function show() vl.Text = tostring(val) .. (suffix or "") end
         local function mk(txt, x, delta)
             local b = new("TextButton", {
-                Size = UDim2.fromOffset(26, 24), Position = UDim2.new(1, x, 0.5, -12),
+                Size = UDim2.fromOffset(22, 18), Position = UDim2.new(1, x, 0.5, -9),
                 BackgroundColor3 = THEME.off, Text = txt, TextColor3 = THEME.text,
-                TextSize = 14, Font = FONT_B,
+                TextSize = 12, Font = FONT_B,
             }, row)
             corner(b, 5)
             b.MouseButton1Click:Connect(function() val = math.clamp(val + delta, minV, maxV); show(); safeCall(cb, val) end)
         end
-        mk("-", -116, -step); mk("+", -36, step)
+        mk("-", -98, -step); mk("+", -30, step)
         show()
     end
     local function textboxRow(parent, title, value, placeholder, cb)
-        local row = card(parent, 58)
-        local t = label(row, title, 11, THEME.sub, FONT_M)
-        t.Size = UDim2.new(1, -20, 0, 16); t.Position = UDim2.new(0, 10, 0, 4)
+        local row = card(parent, 26)
+        local t = label(row, title, 9, THEME.sub, FONT_M)
+        t.Size = UDim2.new(0, 46, 1, 0); t.Position = UDim2.new(0, 8, 0, 0)
         local box = new("TextBox", {
-            Size = UDim2.new(1, -20, 0, 26), Position = UDim2.new(0, 10, 0, 24),
+            Size = UDim2.new(1, -62, 0, 20), Position = UDim2.new(0, 54, 0.5, -10),
             BackgroundColor3 = THEME.off, TextColor3 = THEME.text,
             PlaceholderText = placeholder, PlaceholderColor3 = THEME.sub,
-            Text = value or "", TextSize = 11, Font = FONT_R, ClearTextOnFocus = false,
+            Text = value or "", TextSize = 9, Font = FONT_R, ClearTextOnFocus = false,
             TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
         }, row)
         corner(box, 5)
@@ -5349,7 +5289,7 @@ local function buildUI()
         local lbl = new("TextLabel", {
             Size = UDim2.new(1, -8, 0, 0), Position = UDim2.new(0, 4, 0, 2),
             AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1,
-            TextColor3 = THEME.sub, TextSize = 11, Font = Enum.Font.Code,
+            TextColor3 = THEME.sub, TextSize = 10, Font = Enum.Font.Code,
             TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
             TextYAlignment = Enum.TextYAlignment.Top, Text = "",
         }, sc)
@@ -5373,18 +5313,18 @@ local function buildUI()
         for _, entry in ipairs(FILTERS) do
             local cat, opts = entry[1], entry[2]
             if not cats or table.find(cats, cat) then
-                local lb = label(body, cat, 11, THEME.accent2, FONT_B)
-                lb.Size = UDim2.new(1, 0, 0, 16)
+                local lb = label(body, cat, 10, THEME.accent2, FONT_B)
+                lb.Size = UDim2.new(1, 0, 0, 14)
                 local grid = new("Frame", { Size = UDim2.new(1, 0, 0, 0), BackgroundTransparency = 1 }, body)
                 local gl = new("UIGridLayout", {
-                    CellSize = UDim2.new(0.5, -4, 0, 26),
-                    CellPadding = UDim2.fromOffset(6, 4),
+                    CellSize = UDim2.new(0.5, -3, 0, 22),
+                    CellPadding = UDim2.fromOffset(4, 3),
                     SortOrder = Enum.SortOrder.LayoutOrder,
                 }, grid)
                 fit(grid, gl)
                 for _, opt in ipairs(opts) do
                     local chip = new("TextButton", {
-                        Text = opt, TextSize = 11, Font = FONT_M,
+                        Text = opt, TextSize = 10, Font = FONT_M,
                         BackgroundColor3 = THEME.off, TextColor3 = THEME.sub, AutoButtonColor = false,
                     }, grid)
                     corner(chip, 5)
@@ -5406,20 +5346,93 @@ local function buildUI()
             for _, cat in ipairs({ "Size", "Rarity", "Variant" }) do table.clear(sets[cat]) end
             for _, p in ipairs(painters) do p() end
         end, THEME.off)
-        clr.TextSize = 11
+        clr.TextSize = 10
         return wrap
+    end
+    -- beberapa baris pilihan segmen dalam satu kartu: { {judul, {{nilai, teks}...}, get, set}, ... }
+    local function segGroup(parent, rows)
+        local c = card(parent, #rows * 24 + 4)
+        for ri, row in ipairs(rows) do
+            local y = 2 + (ri - 1) * 24
+            local lb = label(c, row[1], 10, THEME.sub, FONT_M)
+            lb.Size = UDim2.new(0, 46, 0, 20); lb.Position = UDim2.new(0, 8, 0, y)
+            local holder = new("Frame", { Size = UDim2.new(1, -62, 0, 20), Position = UDim2.new(0, 54, 0, y), BackgroundTransparency = 1 }, c)
+            local n, btns = #row[2], {}
+            local function paint()
+                local cur = row[3]()
+                for _, e in ipairs(btns) do
+                    local on = (e.val == cur)
+                    e.b.BackgroundColor3 = on and THEME.accent or THEME.off
+                    e.b.TextColor3 = on and WHITE or THEME.sub
+                end
+            end
+            for i, opt in ipairs(row[2]) do
+                local b = new("TextButton", {
+                    Size = UDim2.new(1 / n, -4, 1, 0), Position = UDim2.new((i - 1) / n, 2, 0, 0),
+                    BackgroundColor3 = THEME.off, Text = opt[2], TextColor3 = THEME.sub,
+                    TextSize = 10, Font = FONT_B, AutoButtonColor = false,
+                }, holder)
+                corner(b, 5)
+                table.insert(btns, { b = b, val = opt[1] })
+                b.MouseButton1Click:Connect(function() safeCall(row[4], opt[1]); paint() end)
+            end
+            paint()
+        end
+        return c
+    end
+    -- chip on/off berdampingan (2 kolom): { {teks, default, cb}, ... }
+    local function chipGrid(parent, items)
+        local rowsN = math.ceil(#items / 2)
+        local c = card(parent, rowsN * 24 + 4)
+        local setters = {}
+        for i, it in ipairs(items) do
+            local col, rw = (i - 1) % 2, math.floor((i - 1) / 2)
+            local b = new("TextButton", {
+                Size = UDim2.new(0.5, -6, 0, 20), Position = UDim2.new(col * 0.5, 4, 0, 2 + rw * 24),
+                BackgroundColor3 = THEME.off, Text = it[1], TextSize = 9, Font = FONT_B,
+                TextColor3 = THEME.sub, AutoButtonColor = false, TextTruncate = Enum.TextTruncate.AtEnd,
+            }, c)
+            corner(b, 5)
+            local on = it[2] and true or false
+            local function paint()
+                b.BackgroundColor3 = on and THEME.accent or THEME.off
+                b.TextColor3 = on and WHITE or THEME.sub
+            end
+            paint()
+            setters[i] = function(v) on = v and true or false; paint() end
+            b.MouseButton1Click:Connect(function() on = not on; paint(); safeCall(it[3], on) end)
+        end
+        return c, setters
+    end
+    -- tombol aksi berdampingan: { {teks, callback, warna?}, ... }
+    local function btnGrid(parent, items, cols)
+        cols = cols or 2
+        local rowsN = math.ceil(#items / cols)
+        local c = new("Frame", { Size = UDim2.new(1, 0, 0, rowsN * 24), BackgroundTransparency = 1 }, parent)
+        for i, it in ipairs(items) do
+            local col, rw = (i - 1) % cols, math.floor((i - 1) / cols)
+            local b = new("TextButton", {
+                Size = UDim2.new(1 / cols, -4, 0, 22), Position = UDim2.new(col / cols, 2, 0, rw * 24),
+                BackgroundColor3 = it[3] or THEME.off, BackgroundTransparency = 0.25, Text = it[1],
+                TextColor3 = WHITE, TextSize = 9, Font = FONT_B, AutoButtonColor = true,
+                TextTruncate = Enum.TextTruncate.AtEnd,
+            }, c)
+            corner(b, 5)
+            b.MouseButton1Click:Connect(function() safeCall(it[2], b) end)
+        end
+        return c
     end
     local function dropdownRow(parent, title, options, current, cb)
         local wrap = new("Frame", { Size = UDim2.new(1, 0, 0, 0), BackgroundTransparency = 1 }, parent)
         local wl = new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, wrap)
         fit(wrap, wl)
-        local head = card(wrap, 34)
+        local head = card(wrap, 26)
         head.LayoutOrder = 1
-        local t = label(head, title, 12, THEME.text, FONT_M)
-        t.Size = UDim2.new(0.22, 0, 1, 0); t.Position = UDim2.new(0, 10, 0, 0)
+        local t = label(head, title, 10, THEME.text, FONT_M)
+        t.Size = UDim2.new(0.18, 0, 1, 0); t.Position = UDim2.new(0, 8, 0, 0)
         local btn = new("TextButton", {
-            Size = UDim2.new(0.78, -18, 0, 24), Position = UDim2.new(0.22, 4, 0.5, -12),
-            BackgroundColor3 = THEME.off, TextColor3 = THEME.text, TextSize = 11,
+            Size = UDim2.new(0.82, -14, 0, 20), Position = UDim2.new(0.18, 2, 0.5, -10),
+            BackgroundColor3 = THEME.off, TextColor3 = THEME.text, TextSize = 10,
             Font = FONT_B, AutoButtonColor = false, TextTruncate = Enum.TextTruncate.AtEnd, Text = "",
         }, head)
         corner(btn, 5)
@@ -5433,8 +5446,8 @@ local function buildUI()
         show(current)
         for _, o in ipairs(options) do
             local ob = new("TextButton", {
-                Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = THEME.off,
-                Text = o.label, TextColor3 = THEME.sub, TextSize = 11,
+                Size = UDim2.new(1, 0, 0, 22), BackgroundColor3 = THEME.off,
+                Text = o.label, TextColor3 = THEME.sub, TextSize = 10,
                 Font = FONT_M, AutoButtonColor = true,
             }, body)
             corner(ob, 5)
@@ -5449,22 +5462,22 @@ local function buildUI()
     -- ===== TAB MAIN =====
     local pageMain = addTab("MAIN")
     section(pageMain, "STATUS")
-    local statusCard = card(pageMain, 62)
+    local statusCard = card(pageMain, 48)
     ui.statusDot = new("Frame", {
-        Size = UDim2.fromOffset(10, 10), Position = UDim2.new(0, 10, 0, 9),
+        Size = UDim2.fromOffset(8, 8), Position = UDim2.new(0, 8, 0, 6),
         BackgroundColor3 = THEME.sub, BorderSizePixel = 0,
     }, statusCard)
-    corner(ui.statusDot, 5)
-    ui.statusText = label(statusCard, "Idle", 12, THEME.text, FONT_B)
-    ui.statusText.Size = UDim2.new(1, -34, 0, 18); ui.statusText.Position = UDim2.new(0, 28, 0, 5)
-    ui.statsText = label(statusCard, "", 11, THEME.sub)
-    ui.statsText.Size = UDim2.new(1, -20, 0, 16); ui.statsText.Position = UDim2.new(0, 10, 0, 26)
-    ui.modeText = label(statusCard, "", 11, THEME.sub)
-    ui.modeText.Size = UDim2.new(1, -20, 0, 16); ui.modeText.Position = UDim2.new(0, 10, 0, 43)
+    corner(ui.statusDot, 4)
+    ui.statusText = label(statusCard, "Idle", 11, THEME.text, FONT_B)
+    ui.statusText.Size = UDim2.new(1, -30, 0, 14); ui.statusText.Position = UDim2.new(0, 22, 0, 3)
+    ui.statsText = label(statusCard, "", 10, THEME.sub)
+    ui.statsText.Size = UDim2.new(1, -16, 0, 14); ui.statsText.Position = UDim2.new(0, 8, 0, 18)
+    ui.modeText = label(statusCard, "", 10, THEME.sub)
+    ui.modeText.Size = UDim2.new(1, -16, 0, 14); ui.modeText.Position = UDim2.new(0, 8, 0, 32)
     ui.modeText.TextTruncate = Enum.TextTruncate.AtEnd
     ui.modeText.TextWrapped = false
     section(pageMain, "KONTROL")
-    toggleRow(pageMain, "Auto Steal Telur", false, function(on)
+    toggleRow(pageMain, "Auto Steal", false, function(on)
         config.running = on
         if on then
             local hrp = getHRP()
@@ -5476,204 +5489,243 @@ local function buildUI()
         else log("Auto Steal OFF") end
         refreshStats()
     end)
-    toggleRow(pageMain, "Treadmill saat idle", false, function(on)
-        config.treadmillIdle = on
-        if on then ensureBrain() end
-    end, "Lari di treadmill bila tidak ada kerjaan")
-    toggleRow(pageMain, "Lewati telur milik sendiri", config.skipOwn, function(on) config.skipOwn = on end)
-    toggleRow(pageMain, "Legit Steal", config.legit, function(on)
-        config.legit = on
-        log("Legit Steal " .. (on and "ON" or "OFF"))
-        refreshStats()
-    end, "Jalan kaki + tahan tombol seperti pemain biasa")
-    toggleRow(pageMain, "Steal Teleport Instan", config.instantSteal, function(on)
-        config.instantSteal = on
-        log("Steal Teleport Instan " .. (on and "ON" or "OFF") .. ((on and config.legit) and " (diabaikan saat Legit Steal aktif)" or ""))
-    end, "Teleport ke telur, ambil, lalu balik ke base (anti jatuh/tenggelam)")
-    choiceRow(pageMain, "Cara bergerak", { { "Walk", "Jalan (humanoid)" }, { "Fly", "Terbang halus" } }, config.method, function(v)
-        config.method = v; refreshStats()
-    end)
-    choiceRow(pageMain, "Mode target", { { "All", "Semua telur" }, { "Filter", "Pakai filter" } }, config.targetMode, function(v)
-        config.targetMode = v; refreshStats()
-    end)
+    segGroup(pageMain, {
+        { "Target", { { "All", "Semua" }, { "Filter", "Filter" } },
+            function() return config.targetMode end,
+            function(v) config.targetMode = v; refreshStats() end },
+        { "Steal", { { false, "Normal" }, { true, "Instan" } },
+            function() return config.instantSteal end,
+            function(v)
+                config.instantSteal = v
+                log("Steal " .. (v and "Instan" or "Normal") .. ((v and config.legit) and " (diabaikan saat Legit aktif)" or ""))
+            end },
+        { "Gerak", { { "Walk", "Jalan" }, { "Fly", "Terbang" } },
+            function() return config.method end,
+            function(v) config.method = v; refreshStats() end },
+    })
+    chipGrid(pageMain, {
+        { "Treadmill idle", false, function(on) config.treadmillIdle = on; if on then ensureBrain() end end },
+        { "Skip milik sendiri", config.skipOwn, function(on) config.skipOwn = on end },
+        { "Legit (jalan kaki)", config.legit, function(on)
+            config.legit = on; log("Legit Steal " .. (on and "ON" or "OFF")); refreshStats()
+        end },
+    })
+    section(pageMain, "POSISI & TERBANG")
     stepperRow(pageMain, "Kecepatan terbang", config.flySpeed, 30, 400, 10, function(v) config.flySpeed = v end)
     stepperRow(pageMain, "Tinggi terbang", config.flyHeight, 0, 60, 2, function(v) config.flyHeight = v end)
-    buttonRow(pageMain, "Set Base di posisi sekarang", function()
-        local hrp = getHRP()
-        if hrp then baseCFrame = hrp.CFrame + Vector3.new(0, 3, 0); Safe.cache = nil; Treadmill.reset(); log("Base disimpan") end
-    end, THEME.off)
-    buttonRow(pageMain, "Set Titik Aman (posisi sekarang)", function()
-        local hrp = getHRP()
-        if hrp then
-            V25.manualSafe = hrp.Position; Safe.cache = nil
-            log("Titik aman manual disimpan. Tekan 'SAVE CONFIG SEKARANG' agar permanen.")
-        end
-    end, THEME.off)
-    buttonRow(pageMain, "Titik Aman: kembali ke otomatis", function()
-        V25.manualSafe = nil; Safe.cache = nil; Safe.lastDesc = nil
-        local p = V25.safeBasePos()
-        log("Titik aman otomatis dipakai" .. (p and (" (%.0f, %.0f, %.0f)"):format(p.X, p.Y, p.Z) or ""))
-    end, THEME.off)
-    buttonRow(pageMain, "Set Treadmill (berdiri di atasnya)", function()
-        local ok2, info = Treadmill.setFromPlayer()
-        if ok2 then log("Treadmill dikunci: " .. tostring(info)) else log("Set Treadmill gagal: " .. tostring(info)) end
-    end, THEME.off)
-    buttonRow(pageMain, "Treadmill: kembali ke otomatis", function()
-        Treadmill.clearManual(); log("Treadmill kembali ke deteksi otomatis")
-    end, THEME.off)
-    section(pageMain, "FILTER TELUR")
+    btnGrid(pageMain, {
+        { "Set Base", function()
+            local hrp = getHRP()
+            if hrp then baseCFrame = hrp.CFrame + Vector3.new(0, 3, 0); Safe.cache = nil; Treadmill.reset(); log("Base disimpan") end
+        end },
+        { "Set Titik Aman", function()
+            local hrp = getHRP()
+            if hrp then
+                V25.manualSafe = hrp.Position; Safe.cache = nil
+                log("Titik aman manual disimpan" .. (config.autoSave and " (auto save)" or ". Tekan SAVE CONFIG agar permanen."))
+            end
+        end },
+        { "Titik Aman: Auto", function()
+            V25.manualSafe = nil; Safe.cache = nil; Safe.lastDesc = nil
+            local p = V25.safeBasePos()
+            log("Titik aman otomatis dipakai" .. (p and (" (%.0f, %.0f, %.0f)"):format(p.X, p.Y, p.Z) or ""))
+        end },
+        { "Set Treadmill", function()
+            local ok2, info = Treadmill.setFromPlayer()
+            if ok2 then log("Treadmill dikunci: " .. tostring(info)) else log("Set Treadmill gagal: " .. tostring(info)) end
+        end },
+        { "Treadmill: Auto", function()
+            Treadmill.clearManual(); log("Treadmill kembali ke deteksi otomatis")
+        end },
+    }, 2)
+    section(pageMain, "FILTER & PREDICT")
     multiSelect(pageMain, "Filter Size / Rarity / Variant", config.filters)
-    section(pageMain, "EGG PREDICT")
-    toggleRow(pageMain, "Egg Predict", false, function(on)
-        config.eggPredict = on
-        if on then V25.startEggPredict()
-        elseif ui.predictLabel then ui.predictLabel.Text = "Egg Predict OFF" end
-    end, "Baca rarity / variant / size telur terdekat")
+    chipGrid(pageMain, {
+        { "Egg Predict", false, function(on)
+            config.eggPredict = on
+            if on then V25.startEggPredict()
+            elseif ui.predictLabel then ui.predictLabel.Text = "Egg Predict OFF" end
+        end },
+    })
     local predictCard = new("Frame", {
         Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundColor3 = THEME.card, BackgroundTransparency = 0.5, BorderSizePixel = 0,
     }, pageMain)
     corner(predictCard, 6)
-    new("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6), PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }, predictCard)
+    new("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, predictCard)
     ui.predictLabel = new("TextLabel", {
         Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundTransparency = 1, Text = "Egg Predict OFF", TextColor3 = THEME.sub,
-        TextSize = 11, Font = Enum.Font.Code, TextWrapped = true,
+        TextSize = 9, Font = Enum.Font.Code, TextWrapped = true,
         TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
     }, predictCard)
-    note(pageMain, "Membaca teks/atribut telur yang terlihat di client.")
-    section(pageMain, "AUTO SELL EGG")
-    toggleRow(pageMain, "Auto Sell Egg", false, function(on)
-        setAuto("sell", on, V25.autoSellOnce); log("Auto Sell Egg " .. (on and "ON" or "OFF"))
-    end, "Jual egg di backpack sesuai rarity")
-    multiSelect(pageMain, "Filter Rarity yang dijual", config.sellFilters, { "Rarity" })
-    section(pageMain, "AUTO FAVORIT")
-    toggleRow(pageMain, "Auto Favorit", false, function(on)
-        setAuto("favorite", on, V25.autoFavoriteOnce); log("Auto Favorit " .. (on and "ON" or "OFF"))
-    end, "Favoritkan item sesuai nama / rarity")
-    textboxRow(pageMain, "Nama item (pisahkan dengan koma)", config.favNames, "contoh: dragon, phoenix", function(txt)
+    section(pageMain, "SELL & FAVORIT")
+    chipGrid(pageMain, {
+        { "Auto Sell Egg", false, function(on)
+            setAuto("sell", on, V25.autoSellOnce); log("Auto Sell Egg " .. (on and "ON" or "OFF"))
+        end },
+        { "Auto Favorit", false, function(on)
+            setAuto("favorite", on, V25.autoFavoriteOnce); log("Auto Favorit " .. (on and "ON" or "OFF"))
+        end },
+    })
+    multiSelect(pageMain, "Rarity yang dijual", config.sellFilters, { "Rarity" })
+    textboxRow(pageMain, "Favorit", config.favNames, "nama item: dragon, phoenix", function(txt)
         config.favNames = txt
     end)
-    multiSelect(pageMain, "Filter Rarity & Variant", config.favFilters, { "Rarity", "Variant" })
+    multiSelect(pageMain, "Filter favorit (Rarity/Variant)", config.favFilters, { "Rarity", "Variant" })
     section(pageMain, "LOG")
-    local logScroll, logLabel = textBox(pageMain, 150)
+    local logScroll, logLabel = textBox(pageMain, 100)
     ui.logScroll, ui.logLabel = logScroll, logLabel
 
     -- ===== TAB PRIORITY =====
     local pagePrio = addTab("PRIORITY")
-    note(pagePrio, "Default MATI. Saat dinyalakan, AFK manager mengerjakan sesuai urutan. #1 selalu Steal Egg.")
+    note(pagePrio, "Default MATI. Dinyalakan = dikerjakan urut sesuai daftar.")
     toggleRow(pagePrio, "Aktifkan Priority", false, function(on)
         V25.applyPriorityMode(on); log("Priority " .. (on and "ON" or "OFF"))
     end, "Mati = tiap fitur jalan sendiri")
     section(pagePrio, "URUTAN PRIORITAS")
-    local lockCard = card(pagePrio, 34)
-    local lockLbl = label(lockCard, "#1   Steal Egg  (wajib, terkunci)", 12, THEME.accent2, FONT_B)
-    lockLbl.Size = UDim2.new(1, -20, 1, 0); lockLbl.Position = UDim2.new(0, 10, 0, 0)
+    local lockCard = card(pagePrio, 24)
+    local lockLbl = label(lockCard, "#1   Steal Egg  (terkunci)", 10, THEME.accent2, FONT_B)
+    lockLbl.Size = UDim2.new(1, -16, 1, 0); lockLbl.Position = UDim2.new(0, 8, 0, 0)
     for i = 2, 7 do
         dropdownRow(pagePrio, "#" .. i, V25.PRIORITY_OPTIONS, config.priority[i], function(id) config.priority[i] = id end)
     end
 
     -- ===== TAB AREA =====
     local pageArea = addTab("AREA")
-    note(pageArea, "Pilih biome yang boleh dicuri. Kosong = semua area.")
-    local areaToggles = {}
-    buttonRow(pageArea, "Pilih semua area", function()
-        for _, nm in ipairs(AREAS) do config.areas[nm] = true; areaToggles[nm].set(true) end
-        refreshStats()
-        task.spawn(function() pcall(V25.learnAreaCenters, true) end)
-    end, THEME.off)
-    buttonRow(pageArea, "Kosongkan pilihan", function()
-        for _, nm in ipairs(AREAS) do config.areas[nm] = nil; areaToggles[nm].set(false) end
-        refreshStats()
-    end, THEME.off)
-    buttonRow(pageArea, "Salin titik area (untuk dibagikan)", function()
-        local lines = {}
-        for _, nm in ipairs(AREAS) do
-            local c = areaCenters[nm]
-            if c then table.insert(lines, ('    ["%s"] = { %d, %d, %d },'):format(nm, math.floor(c.X + 0.5), math.floor(c.Y + 0.5), math.floor(c.Z + 0.5))) end
+    note(pageArea, "Kosong = semua area. Titik area terdeteksi otomatis (AUTO); SET hanya koreksi manual.")
+    local areaToggles, areaPins = {}, {}
+    local function updateAreaPins()
+        for nm, pin in pairs(areaPins) do
+            if V40.areaManual[nm] then pin.Text = "SET*"; pin.TextColor3 = THEME.good
+            elseif V40.areaAuto[nm] then pin.Text = "AUTO"; pin.TextColor3 = THEME.good
+            else pin.Text = "SET"; pin.TextColor3 = THEME.sub end
         end
-        local out = "local DEFAULT_AREA_CENTERS = {\n" .. table.concat(lines, "\n") .. "\n}"
-        if typeof(setclipboard) == "function" then pcall(setclipboard, out); log("Titik area disalin (" .. #lines .. " area)")
-        else log("Executor tidak mendukung setclipboard. Isi:\n" .. out) end
-    end, THEME.off)
-    for _, nm in ipairs(AREAS) do
-        local t = toggleRow(pageArea, nm, config.areas[nm] == true, function(on)
-            config.areas[nm] = on or nil; refreshStats()
-            if on then task.spawn(function() pcall(V25.learnAreaCenters, true) end) end
-        end, nil, 56)
-        areaToggles[nm] = t
+    end
+    btnGrid(pageArea, {
+        { "Pilih semua", function()
+            for _, nm in ipairs(AREAS) do config.areas[nm] = true; areaToggles[nm].set(true) end
+            refreshStats()
+        end },
+        { "Kosongkan", function()
+            for _, nm in ipairs(AREAS) do config.areas[nm] = nil; areaToggles[nm].set(false) end
+            refreshStats()
+        end },
+        { "Reset titik", function()
+            for k in pairs(V40.areaManual) do V40.areaManual[k] = nil end
+            V40.refreshAreaCenters(true); updateAreaPins(); log("Titik manual dihapus, memakai titik otomatis")
+        end },
+    }, 3)
+    local areaCard = card(pageArea, math.ceil(#AREAS / 2) * 24 + 4)
+    for i, nm in ipairs(AREAS) do
+        local col, rw = (i - 1) % 2, math.floor((i - 1) / 2)
+        local y = 2 + rw * 24
+        local on = config.areas[nm] == true
+        local chip = new("TextButton", {
+            Size = UDim2.new(0.5, -40, 0, 20), Position = UDim2.new(col * 0.5, 3, 0, y),
+            BackgroundColor3 = THEME.off, Text = nm, TextSize = 9, Font = FONT_B, TextColor3 = THEME.sub,
+            AutoButtonColor = false, TextTruncate = Enum.TextTruncate.AtEnd,
+        }, areaCard)
+        corner(chip, 5)
+        local function paint()
+            chip.BackgroundColor3 = on and THEME.accent or THEME.off
+            chip.TextColor3 = on and WHITE or THEME.sub
+        end
+        paint()
+        areaToggles[nm] = { set = function(v) on = v and true or false; paint() end }
+        chip.MouseButton1Click:Connect(function()
+            on = not on; paint(); config.areas[nm] = on or nil; refreshStats()
+            if on then task.spawn(function() V40.refreshAreaCenters(true); updateAreaPins() end) end
+        end)
         local pin = new("TextButton", {
-            Size = UDim2.fromOffset(46, 22), Position = UDim2.new(1, -114, 0.5, -11),
-            BackgroundColor3 = THEME.off, Text = areaCenters[nm] and "SET*" or "SET",
-            TextColor3 = areaCenters[nm] and THEME.good or THEME.sub, TextSize = 10, Font = FONT_B,
-        }, t.row)
+            Size = UDim2.fromOffset(32, 20), Position = UDim2.new(col * 0.5 + 0.5, -35, 0, y),
+            BackgroundColor3 = THEME.off, Text = "SET", TextColor3 = THEME.sub, TextSize = 8, Font = FONT_B,
+        }, areaCard)
         corner(pin, 5)
-        V25.areaPins[nm] = pin
+        areaPins[nm] = pin
         pin.MouseButton1Click:Connect(function()
             local hrp = getHRP(); if not hrp then return end
-            V25.areaManual[nm] = true; V25.areaSrc[nm] = "manual"
-            areaCenters[nm] = hrp.Position; pin.Text = "SET*"; pin.TextColor3 = THEME.good
-            log("Pusat area " .. nm .. " disimpan")
+            areaCenters[nm] = hrp.Position; V40.areaManual[nm] = true; updateAreaPins()
+            log("Pusat area " .. nm .. " disimpan manual")
         end)
     end
+    updateAreaPins()
+    -- cari titik area otomatis begitu UI jadi, lalu segarkan label tiap beberapa detik
+    task.spawn(function()
+        local round = 0
+        while uiAlive do
+            round += 1
+            pcall(V40.refreshAreaCenters, round <= 8) -- 8 putaran pertama dipaksa (±1 menit), sesudahnya hemat
+            pcall(updateAreaPins)
+            task.wait(6)
+        end
+    end)
 
-    -- ===== TAB AUTOMATION =====
-    local pageAuto = addTab("AUTOMATION")
-    note(pageAuto, "Automation bekerja untuk prompt/tombol di sekitar base (radius " .. BASE_RADIUS .. ").")
-    section(pageAuto, "TELUR & INDEX")
-    local autoDefs = {
-        { "hatch", "Auto Hatch", autoHatchOnce, "Menetaskan telur di base" },
-        { "place", "Auto Place", autoPlaceOnce, "Menaruh telur dari backpack" },
-        { "fuse", "Auto Fuse", autoFuseOnce, "Menjalankan fuse otomatis" },
-        { "index", "Auto Claim Index", autoIndexOnce, "Klaim hadiah Index tiap 60 detik" },
-    }
-    for _, def in ipairs(autoDefs) do
-        toggleRow(pageAuto, def[2], false, function(on)
-            setAuto(def[1], on, def[3]); log(def[2] .. (on and " ON" or " OFF"))
-        end, def[4])
+    -- ===== TAB AUTO =====
+    local pageAuto = addTab("AUTO")
+    note(pageAuto, "Bekerja untuk tombol/prompt di sekitar base (radius " .. BASE_RADIUS .. ").")
+    local function autoChips(defs)
+        local items = {}
+        for _, def in ipairs(defs) do
+            table.insert(items, { def[2], false, function(on)
+                setAuto(def[1], on, def[3]); log(def[4] .. (on and " ON" or " OFF"))
+            end })
+        end
+        return chipGrid(pageAuto, items)
     end
+    section(pageAuto, "TELUR & INDEX")
+    autoChips({
+        { "hatch", "Hatch", autoHatchOnce, "Auto Hatch" },
+        { "place", "Place", autoPlaceOnce, "Auto Place" },
+        { "fuse", "Fuse", autoFuseOnce, "Auto Fuse" },
+        { "index", "Claim Index", autoIndexOnce, "Auto Claim Index" },
+    })
     stepperRow(pageAuto, "Jeda antar aksi", config.autoInterval, 2, 60, 1, function(v) config.autoInterval = v end, " dtk")
     multiSelect(pageAuto, "Filter telur untuk Place", config.placeFilters)
     section(pageAuto, "UPGRADE")
-    local upgDefs = {
-        { "upgTrail", "Auto Upgrade Trail", V25.autoUpgTrailOnce, "Klik tombol Upgrade milik Trail" },
-        { "upgTreadmill", "Auto Upgrade Treadmill", V25.autoUpgTreadmillOnce, "Klik tombol Upgrade milik Treadmill" },
-        { "upgBase", "Auto Upgrade Base", V25.autoUpgBaseOnce, "Klik tombol Upgrade milik Base" },
-    }
-    for _, def in ipairs(upgDefs) do
-        toggleRow(pageAuto, def[2], false, function(on)
-            setAuto(def[1], on, def[3]); log(def[2] .. (on and " ON" or " OFF"))
-        end, def[4])
-    end
-    section(pageAuto, "PET AUTOMATION")
-    toggleRow(pageAuto, "Auto Taruh Pet di Plot", false, function(on)
-        setAuto("petPlace", on, V25.autoPetPlaceOnce); log("Auto Taruh Pet " .. (on and "ON" or "OFF"))
-    end, "Pilih pet berdasarkan nama atau rarity")
-    textboxRow(pageAuto, "Nama pet yang ditaruh (pisahkan koma)", config.petPlaceNames, "contoh: dragon, cat", function(txt) config.petPlaceNames = txt end)
+    autoChips({
+        { "upgTrail", "Trail", V25.autoUpgTrailOnce, "Auto Upgrade Trail" },
+        { "upgTreadmill", "Treadmill", V25.autoUpgTreadmillOnce, "Auto Upgrade Treadmill" },
+        { "upgBase", "Base", V25.autoUpgBaseOnce, "Auto Upgrade Base" },
+    })
+    section(pageAuto, "PET")
+    autoChips({
+        { "petPlace", "Taruh Pet", V25.autoPetPlaceOnce, "Auto Taruh Pet" },
+        { "petSell", "Jual Pet", V25.autoPetSellOnce, "Auto Jual Pet" },
+    })
+    textboxRow(pageAuto, "Taruh", config.petPlaceNames, "nama pet: dragon, cat", function(txt) config.petPlaceNames = txt end)
     multiSelect(pageAuto, "Rarity pet yang ditaruh", config.petPlaceFilters, { "Rarity" })
-    toggleRow(pageAuto, "Auto Jual Pet", false, function(on)
-        setAuto("petSell", on, V25.autoPetSellOnce); log("Auto Jual Pet " .. (on and "ON" or "OFF"))
-    end, "Pilih pet berdasarkan nama atau rarity")
-    textboxRow(pageAuto, "Nama pet yang dijual (pisahkan koma)", config.petSellNames, "contoh: rat, mouse", function(txt) config.petSellNames = txt end)
+    textboxRow(pageAuto, "Jual", config.petSellNames, "nama pet: rat, mouse", function(txt) config.petSellNames = txt end)
     multiSelect(pageAuto, "Rarity pet yang dijual", config.petSellFilters, { "Rarity" })
 
     -- ===== TAB EVENT =====
     local pageEvent = addTab("EVENT")
-    note(pageEvent, "Event aktif. Nama objek event di game harus sesuai dengan EVENT_DEFS di script.")
-    for _, def in ipairs(EVENT_DEFS) do
-        toggleRow(pageEvent, def.name, false, function(on)
-            config.events[def.id] = on
-            if on then ensureBrain() end
-            log("Event " .. def.name .. (on and " ON" or " OFF"))
-        end, def.desc)
+    note(pageEvent, "Nyalakan event yang mau diikuti. Nama objek harus sesuai EVENT_DEFS.")
+    local EVENT_SHORT = {
+        racing = "Racing", hwdim = "Halloween Gate", hwboss = "Halloween Boss", scramble = "Dr. Scramble",
+        rift = "Rift & Overlord", butterfly = "Butterfly Bloom", admin = "Admin Abuse",
+    }
+    do
+        local items = {}
+        for _, def in ipairs(EVENT_DEFS) do
+            table.insert(items, { EVENT_SHORT[def.id] or def.name, false, function(on)
+                config.events[def.id] = on
+                if on then ensureBrain() end
+                log("Event " .. def.name .. (on and " ON" or " OFF"))
+            end })
+        end
+        chipGrid(pageEvent, items)
     end
 
     -- ===== TAB SHOP =====
     local pageShop = addTab("SHOP")
-    note(pageShop, "Membuka shop lewat tombol HUD atau terbang ke objek shop. Tombol pembelian tidak pernah diklik otomatis.")
-    for _, def in ipairs(SHOPS) do
-        buttonRow(pageShop, def.name, function() openShop(def) end)
-        note(pageShop, def.info)
+    note(pageShop, "Membuka shop via tombol HUD atau terbang ke objeknya. Tombol beli tidak pernah diklik otomatis.")
+    do
+        local items = {}
+        for _, def in ipairs(SHOPS) do
+            table.insert(items, { def.name, function() openShop(def) end, THEME.accent })
+        end
+        btnGrid(pageShop, items, 2)
     end
     buttonRow(pageShop, "Tutup semua jendela shop", function()
         task.spawn(function()
@@ -5685,10 +5737,12 @@ local function buildUI()
     -- ===== TAB PROTEKSI =====
     local pageProt = addTab("PROTEKSI")
     section(pageProt, "PROTEKSI")
-    toggleRow(pageProt, "Anti Knockback", config.antiKB, function(on) config.antiKB = on; Protect.sync() end)
-    toggleRow(pageProt, "Anti Trapped", config.antiTrap, function(on) config.antiTrap = on; Protect.sync() end)
-    toggleRow(pageProt, "Anti AFK", config.antiAfk, function(on) config.antiAfk = on; AFK.sync() end)
-    toggleRow(pageProt, "Hapus popup '+Speed' & partikel", config.removePopups, function(on) setPopupCleaner(on) end, "Hemat CPU/RAM")
+    chipGrid(pageProt, {
+        { "Anti Knockback", config.antiKB, function(on) config.antiKB = on; Protect.sync() end },
+        { "Anti Trapped", config.antiTrap, function(on) config.antiTrap = on; Protect.sync() end },
+        { "Anti AFK", config.antiAfk, function(on) config.antiAfk = on; AFK.sync() end },
+        { "Hapus popup +Speed", config.removePopups, function(on) setPopupCleaner(on) end },
+    })
     section(pageProt, "TAMPILAN & PERFORMA")
     local pingFrame = new("Frame", {
         Size = UDim2.fromOffset(160, 22), Position = UDim2.new(1, -170, 0, 6),
@@ -5700,47 +5754,49 @@ local function buildUI()
         Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
         TextColor3 = THEME.good, TextSize = 11, Font = FONT_B, Text = "PING - | FPS -",
     }, pingFrame)
-    toggleRow(pageProt, "Panel Ping & FPS", config.pingPanel, function(on)
-        config.pingPanel = on; pingFrame.Visible = on
-    end)
-    local antiLagToggle = toggleRow(pageProt, "Anti Lag (matikan partikel)", config.antiLag, function(on)
-        config.antiLag = on; setAntiLag(on)
-    end)
-    toggleRow(pageProt, "Hide All GUI", false, function(on)
-        V25.setHideAllGui(on); log("Hide All GUI " .. (on and "ON" or "OFF"))
-    end, "Sembunyikan semua GUI game (GUI Vura tetap tampil). Auto shop/jual butuh GUI game, matikan dulu")
-    toggleRow(pageProt, "Mode AFK Hemat", false, function(on)
-        V25.setAfkSaver(on); log("Mode AFK Hemat " .. (on and "ON" or "OFF"))
-    end, "Batasi FPS + volume 0 (render 3D TIDAK dimatikan)")
-    stepperRow(pageProt, "Batas FPS saat AFK hemat", config.fpsCap, 5, 60, 5, function(v)
+    local _, perfSet = chipGrid(pageProt, {
+        { "Panel Ping & FPS", config.pingPanel, function(on) config.pingPanel = on; pingFrame.Visible = on end },
+        { "Anti Lag", config.antiLag, function(on) config.antiLag = on; setAntiLag(on) end },
+        { "Hide All GUI", false, function(on)
+            V25.setHideAllGui(on); log("Hide All GUI " .. (on and "ON" or "OFF"))
+        end },
+        { "AFK Hemat", false, function(on)
+            V25.setAfkSaver(on); log("Mode AFK Hemat " .. (on and "ON" or "OFF"))
+        end },
+    })
+    local antiLagToggle = { set = perfSet[2] }
+    note(pageProt, "Hide All GUI: matikan dulu bila memakai auto shop/jual. AFK Hemat = batasi FPS + volume 0.")
+    stepperRow(pageProt, "Batas FPS AFK hemat", config.fpsCap, 5, 60, 5, function(v)
         config.fpsCap = v
         if config.afkSaver and typeof(setfpscap) == "function" then pcall(setfpscap, v) end
     end)
-    buttonRow(pageProt, "Hapus plot orang lain (plot sendiri aman)", function()
-        plotKeepMine = true; task.spawn(removePlots)
-    end, THEME.off)
-    buttonRow(pageProt, "Super FPS Boost", function()
-        task.spawn(function() superFpsBoost(); config.antiLag = true; antiLagToggle.set(true) end)
-    end, THEME.warn)
+    btnGrid(pageProt, {
+        { "Hapus plot orang lain", function() plotKeepMine = true; task.spawn(removePlots) end },
+        { "Super FPS Boost", function()
+            task.spawn(function() superFpsBoost(); config.antiLag = true; antiLagToggle.set(true) end)
+        end, THEME.warn },
+    }, 2)
 
     -- ===== TAB WEBHOOK =====
     local pageWh = addTab("WEBHOOK")
     section(pageWh, "NOTIFIKASI TELUR")
-    toggleRow(pageWh, "Kirim webhook tiap telur didapat", false, function(on)
+    toggleRow(pageWh, "Kirim webhook tiap telur", false, function(on)
         config.eggWebhookOn = on
         if on and not validWebhook(config.eggWebhookUrl) then log("URL webhook telur belum valid") end
     end)
-    textboxRow(pageWh, "URL Webhook Discord (telur)", config.eggWebhookUrl, "https://discord.com/api/webhooks/...", function(txt)
+    textboxRow(pageWh, "URL", config.eggWebhookUrl, "https://discord.com/api/webhooks/...", function(txt)
         config.eggWebhookUrl = (txt:gsub("%s+", ""))
     end)
-    buttonRow(pageWh, "Tes webhook telur", function()
-        if not validWebhook(config.eggWebhookUrl) then log("URL webhook telur belum valid"); return end
-        queueWebhook(config.eggWebhookUrl, embedPayload("Tes webhook", 0x8B5CF6, {
-            { name = "Status", value = "Berhasil terhubung", inline = true },
-            { name = "Pemain", value = player.DisplayName, inline = true },
-        }))
-        log("Tes webhook telur dikirim")
-    end, THEME.off)
+    btnGrid(pageWh, {
+        { "Tes webhook telur", function()
+            if not validWebhook(config.eggWebhookUrl) then log("URL webhook telur belum valid"); return end
+            queueWebhook(config.eggWebhookUrl, embedPayload("Tes webhook", 0x8B5CF6, {
+                { name = "Status", value = "Berhasil terhubung", inline = true },
+                { name = "Pemain", value = player.DisplayName, inline = true },
+            }))
+            log("Tes webhook telur dikirim")
+        end },
+    }, 1)
     section(pageWh, "LAPORAN AFK")
     toggleRow(pageWh, "Kirim laporan berkala", false, function(on)
         config.statsWebhookOn = on
@@ -5749,36 +5805,49 @@ local function buildUI()
             startStatsLoop()
         end
     end)
-    textboxRow(pageWh, "URL Webhook Discord (laporan)", config.statsWebhookUrl, "https://discord.com/api/webhooks/...", function(txt)
+    textboxRow(pageWh, "URL", config.statsWebhookUrl, "https://discord.com/api/webhooks/...", function(txt)
         config.statsWebhookUrl = (txt:gsub("%s+", ""))
     end)
     stepperRow(pageWh, "Interval laporan", config.statsIntervalMin, 1, 120, 1, function(v) config.statsIntervalMin = v end, " mnt")
-    buttonRow(pageWh, "Kirim laporan sekarang", function()
-        if not validWebhook(config.statsWebhookUrl) then log("URL webhook laporan belum valid"); return end
-        sendStatsWebhook(true); log("Laporan dikirim")
-    end, THEME.off)
+    btnGrid(pageWh, {
+        { "Kirim laporan sekarang", function()
+            if not validWebhook(config.statsWebhookUrl) then log("URL webhook laporan belum valid"); return end
+            sendStatsWebhook(true); log("Laporan dikirim")
+        end },
+    }, 1)
 
     -- ===== TAB CONFIG =====
     local pageCfg = addTab("CONFIG")
-    toggleRow(pageCfg, "Efek Petir & Batu (border)", config.fxBorder ~= false, function(on)
-        config.fxBorder = on
-        if ui.fxLayer then ui.fxLayer.Visible = on end
-    end, "Ringan (25 FPS, objek dipakai ulang). Matikan bila HP berat")
-    local saveBtn
-    saveBtn = buttonRow(pageCfg, "SAVE CONFIG SEKARANG", function()
-        local ok = saveSettings(true) -- satu-satunya tempat writefile dipanggil
-        saveBtn.Text = ok and "TERSIMPAN!" or "GAGAL (executor tidak support writefile)"
-        task.delay(1.5, function() if saveBtn.Parent then saveBtn.Text = "SAVE CONFIG SEKARANG" end end)
-    end)
+    local _, cfgSet = chipGrid(pageCfg, {
+        { "Auto Save (10 dtk)", config.autoSave, function(on)
+            config.autoSave = on
+            if on then pcall(saveSettings, false) end
+            log("Auto Save " .. (on and "ON" or "OFF"))
+        end },
+        { "Efek Petir & Batu", config.fxBorder ~= false, function(on)
+            config.fxBorder = on
+            if ui.fxLayer then ui.fxLayer.Visible = on end
+        end },
+    })
+    btnGrid(pageCfg, {
+        { "SAVE CONFIG SEKARANG", function(b)
+            local ok = saveSettings(true)
+            b.Text = ok and "TERSIMPAN!" or "GAGAL (tidak support writefile)"
+            task.delay(1.5, function() if b.Parent then b.Text = "SAVE CONFIG SEKARANG" end end)
+        end, THEME.accent },
+    }, 1)
     note(pageCfg, "File config: " .. SAVE_FILE)
-    buttonRow(pageCfg, "Hapus file simpanan", function()
-        if typeof(delfile) == "function" and typeof(isfile) == "function" then
-            pcall(function() if isfile(SAVE_FILE) then delfile(SAVE_FILE) end end)
-            lastSavedJson = nil
-            log("File simpanan dihapus.")
-        else log("Executor tidak mendukung delfile") end
-    end, THEME.bad)
-    buttonRow(pageCfg, "Unload script", function() cleanup() end, THEME.bad)
+    btnGrid(pageCfg, {
+        { "Hapus file simpanan", function()
+            if typeof(delfile) == "function" and typeof(isfile) == "function" then
+                pcall(function() if isfile(SAVE_FILE) then delfile(SAVE_FILE) end end)
+                lastSavedJson = nil
+                config.autoSave = false; cfgSet[1](false)
+                log("File simpanan dihapus. Auto Save dimatikan.")
+            else log("Executor tidak mendukung delfile") end
+        end, THEME.bad },
+        { "Unload script", function() cleanup() end, THEME.bad },
+    }, 2)
 
     -- ===== TAB DEBUG =====
     local pageDbg = addTab("DEBUG")
@@ -5938,7 +6007,7 @@ local function buildUI()
         else log("Executor tidak mendukung setclipboard") end
     end, THEME.off)
     buttonRow(pageDbg, "Bersihkan output", function() table.clear(dbgLines); if dbgLabel then dbgLabel.Text = "" end end, THEME.off)
-    local _, dl = textBox(pageDbg, 220)
+    local _, dl = textBox(pageDbg, 160)
     dbgLabel = dl
 
     -- Animasi border + panel ping
@@ -5946,7 +6015,6 @@ local function buildUI()
     track(RunService.RenderStepped:Connect(function(dt)
         if not uiAlive then return end
         if win.Visible then
-            strokeGrad.Rotation = (strokeGrad.Rotation + dt * 50) % 360
             for _, r in ipairs(bh.rings) do r.grad.Rotation = (r.grad.Rotation + dt * r.speed) % 360 end
             if bh.stars then bh.stars.Rotation = (bh.stars.Rotation + dt * 9) % 360 end
             if bh.coreStroke then bh.coreStroke.Transparency = 0.2 + 0.2 * math.sin(os.clock() * 1.6) end
@@ -5977,6 +6045,7 @@ local function buildUI()
             end
         end
     end
+    applyCollapse()
     selectTab(tabs[1])
     refreshStats()
     setStatus("Idle", THEME.sub)
@@ -5995,5 +6064,11 @@ end
 Protect.sync(); AFK.sync()
 if config.removePopups then setPopupCleaner(true) end
 if config.antiLag then setAntiLag(true) end
--- (V38) tidak ada loop auto-save: config disimpan hanya saat tombol SAVE CONFIG diklik
+-- Auto Save (default ON): tiap 10 detik, hanya menulis file kalau isi config berubah
+task.spawn(function()
+    while uiAlive do
+        task.wait(10)
+        if uiAlive and config.autoSave then pcall(saveSettings, false) end
+    end
+end)
 log("Loaded " .. VERSION)
