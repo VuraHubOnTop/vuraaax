@@ -129,14 +129,6 @@ for name, arr in pairs(S("areaCenters", {})) do
     if type(arr) == "table" and #arr == 3 then areaCenters[name] = Vector3.new(arr[1], arr[2], arr[3]) end
 end
 
--- V35: TITIK BAWAAN (koordinat map sama untuk semua pemain). Isi dari tombol "Salin titik area" di tab AREA.
--- Contoh isi:  Lake = { 120, 10, -400 },  Desert = { ... },
-V25.DEFAULT_AREA_CENTERS = {
-}
-for name, arr in pairs(V25.DEFAULT_AREA_CENTERS) do
-    if not areaCenters[name] and type(arr) == "table" and #arr == 3 then areaCenters[name] = Vector3.new(arr[1], arr[2], arr[3]) end
-end
-
 local config = {
     running = false, treadmillIdle = false,
     method = S("method", "Walk"), targetMode = S("targetMode", "All"),
@@ -163,6 +155,14 @@ local config = {
 }
 
 local V25 = {}
+
+-- V35: TITIK BAWAAN (koordinat map sama untuk semua pemain). Isi dari tombol "Salin titik area" di tab AREA.
+-- Contoh isi:  Lake = { 120, 10, -400 },  Desert = { ... },
+V25.DEFAULT_AREA_CENTERS = {
+}
+for name, arr in pairs(V25.DEFAULT_AREA_CENTERS) do
+    if not areaCenters[name] and type(arr) == "table" and #arr == 3 then areaCenters[name] = Vector3.new(arr[1], arr[2], arr[3]) end
+end
 -- V39: hasil permanen dari DEBUG > "UJI REMOTE". Format: fitur = { "nama remote persis", "bentuk argumen" }
 -- fitur: sell, favorite, claim, upgTrail, upgTreadmill, upgBase | argumen: uid, uidTrue, uidOne, uidTable, uidMap, tool, none, keyTitle, keyLower
 V25.REMOTE_FIX = {
@@ -695,6 +695,12 @@ function V25.offerCenter(name, pos, src)
     local pin = V25.areaPins[name]
     if pin then pcall(function() pin.Text = "AUTO"; pin.TextColor3 = THEME.good end) end
 end
+function V25.isPosKey(k)
+    if type(k) ~= "string" then return false end
+    local nk = norm(k)
+    for _, pk in ipairs(V25.POS_KEYS) do if nk:find(pk, 1, true) then return true end end
+    return false
+end
 function V25.walkAreaTable(t, depth, inherited, seen)
     if depth > 5 or seen[t] then return end
     seen[t] = true
@@ -703,8 +709,7 @@ function V25.walkAreaTable(t, depth, inherited, seen)
         local name = an or inherited
         if name then
             local direct = V25.toV3(v)
-            if direct and (an or (type(k) == "string" and (function()
-                local nk = norm(k); for _, pk in ipairs(V25.POS_KEYS) do if nk:find(pk, 1, true) then return true end end end)())) then
+            if direct and (an or V25.isPosKey(k)) then
                 V25.offerCenter(name, direct, "data")
             end
         end
