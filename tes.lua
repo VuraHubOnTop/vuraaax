@@ -1,5 +1,5 @@
 --[[
-    EX_StealAnEgg V40 (Auto Area)
+    EX_StealAnEgg V43 (Minimal UI)
     Catatan struktur:
       1. Konfigurasi, tema, dan tabel kata kunci (baris ~1-150)
       2. Helper, snapshot prompt, lock, proteksi karakter
@@ -27,7 +27,265 @@ pcall(function()
     end
 end)
 
-local VERSION = "V41 (Auto Area+)"
+-- ==========================================
+-- KEY SYSTEM
+-- Runs first: nothing else in this script starts until the key is accepted.
+-- Flow: log HWID (webhook) -> read key (getgenv().script_key / saved file / typed) -> verify on the key server.
+-- Server contract (POST JSON to KEY_API_URL):
+--   request : { key, hwid, userid, username, placeid }
+--   response: { "valid": true|false, "message": "text shown to the user" }
+-- ==========================================
+local function keyGate()
+    -- >>> FILL THESE IN <<<
+    local KEY_API_URL = ""        -- e.g. KEY_SERVER_URL .. "/verify" (your Railway key server)
+    local GETKEY_URL = ""         -- link where users get a key (Discord invite / key page)
+    local HWID_WEBHOOK_URL = ""   -- Discord webhook for the HWID log channel
+    local KEY_FILE = "vura_key.txt"
+
+    pcall(function()
+        for _, v in ipairs(playerGui:GetChildren()) do
+            if v.Name == "VuraKey" then v:Destroy() end
+        end
+    end)
+
+    local keyRequest = (syn and syn.request) or (http and http.request) or http_request or request
+    local THEME_ACCENT = Color3.fromRGB(142, 62, 255)
+
+    local function getHWID()
+        local ok, id = pcall(function()
+            if typeof(gethwid) == "function" then return gethwid() end
+            return nil
+        end)
+        if ok and id and tostring(id) ~= "" then return tostring(id) end
+        ok, id = pcall(function() return game:GetService("RbxAnalyticsService"):GetClientId() end)
+        if ok and id and tostring(id) ~= "" then return tostring(id) end
+        return "unknown"
+    end
+    local hwid = getHWID()
+
+    local function executorName()
+        local ok, name, ver = pcall(function()
+            if typeof(identifyexecutor) == "function" then return identifyexecutor() end
+            return nil
+        end)
+        if ok and name then return tostring(name) .. (ver and (" " .. tostring(ver)) or "") end
+        return "unknown"
+    end
+    local function maskKey(k)
+        if not k or k == "" then return "-" end
+        if #k > 8 then return k:sub(1, 4) .. "****" .. k:sub(-2) end
+        return "****"
+    end
+
+    -- HWID log (webhook). Never blocks the script; failures are ignored.
+    local function sendLog(title, color, status, key)
+        if HWID_WEBHOOK_URL == "" or not keyRequest then return end
+        task.spawn(function()
+            pcall(keyRequest, {
+                Url = HWID_WEBHOOK_URL, Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = HttpService:JSONEncode({
+                    username = "Vura HWID Log",
+                    embeds = { {
+                        title = title, color = color,
+                        fields = {
+                            { name = "Player", value = ("%s (@%s)"):format(player.DisplayName, player.Name), inline = true },
+                            { name = "UserId", value = tostring(player.UserId), inline = true },
+                            { name = "Status", value = status, inline = false },
+                            { name = "HWID", value = "```" .. hwid .. "```", inline = false },
+                            { name = "Key", value = maskKey(key), inline = true },
+                            { name = "Executor", value = executorName(), inline = true },
+                            { name = "PlaceId", value = tostring(game.PlaceId), inline = true },
+                        },
+                        footer = { text = "Vura | HWID Log" },
+                        timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+                    } },
+                }),
+            })
+        end)
+    end
+
+    -- returns ok, message
+    local function verify(key)
+        if KEY_API_URL == "" then return false, "Key server is not configured" end
+        if not keyRequest then return false, "Executor has no HTTP request function" end
+        local ok, res = pcall(keyRequest, {
+            Url = KEY_API_URL, Method = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = HttpService:JSONEncode({
+                key = key, hwid = hwid, userid = player.UserId,
+                username = player.Name, placeid = game.PlaceId,
+            }),
+        })
+        if not ok or not res then return false, "Could not reach the key server" end
+        local status = res.StatusCode or res.status_code
+        local okd, data = pcall(function() return HttpService:JSONDecode(res.Body or res.body or "") end)
+        if not okd or type(data) ~= "table" then
+            return false, "Invalid server response (HTTP " .. tostring(status) .. ")"
+        end
+        if data.valid == true or data.success == true then return true, data.message or "Key accepted" end
+        return false, data.message or "Invalid key"
+    end
+
+    local function saveKey(key)
+        if typeof(writefile) == "function" then pcall(writefile, KEY_FILE, key) end
+    end
+
+    -- 1) log that the script was executed (HWID captured right away)
+    sendLog("Script executed", 0x8B5CF6, "Awaiting key", nil)
+
+    -- 2) look for a key: getgenv().script_key first, then the saved file
+    local candidate
+    do
+        local okEnv, env = pcall(function() return getgenv() end)
+        if okEnv and type(env) == "table" then
+            local k = env.script_key or env.key
+            if type(k) == "string" and k ~= "" then candidate = k end
+        end
+        if not candidate and typeof(readfile) == "function" and typeof(isfile) == "function" then
+            local okF, data = pcall(function() if isfile(KEY_FILE) then return readfile(KEY_FILE) end; return nil end)
+            if okF and type(data) == "string" then
+                data = data:gsub("%s+", "")
+                if data ~= "" then candidate = data end
+            end
+        end
+    end
+
+    local lastMsg
+    if candidate then
+        local ok, msg = verify(candidate)
+        sendLog(ok and "Key accepted" or "Key rejected", ok and 0x57F287 or 0xED4245, msg, candidate)
+        if ok then saveKey(candidate); return true end
+        lastMsg = msg
+    end
+
+    -- 3) ask for the key in a small window
+    local state = { done = false, ok = false }
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "VuraKey"; gui.ResetOnSpawn = false; gui.DisplayOrder = 10
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.Parent = playerGui
+
+    local function mk(class, props, parent)
+        local o = Instance.new(class)
+        for k, v in pairs(props) do o[k] = v end
+        o.Parent = parent
+        return o
+    end
+    local function round(o, r) mk("UICorner", { CornerRadius = UDim.new(0, r) }, o) end
+
+    local frame = mk("Frame", {
+        Size = UDim2.fromOffset(280, 176), Position = UDim2.new(0.5, -140, 0.5, -88),
+        BackgroundColor3 = Color3.fromRGB(12, 10, 17), BorderSizePixel = 0,
+    }, gui)
+    round(frame, 10)
+    mk("UIStroke", { Color = THEME_ACCENT, Thickness = 1, Transparency = 0.55 }, frame)
+    mk("TextLabel", {
+        Size = UDim2.new(1, -40, 0, 26), Position = UDim2.fromOffset(12, 6), BackgroundTransparency = 1,
+        Text = "Vura  |  Key", TextColor3 = Color3.new(1, 1, 1), TextSize = 12,
+        Font = Enum.Font.GothamBold, TextXAlignment = Enum.TextXAlignment.Left,
+    }, frame)
+    local closeB = mk("TextButton", {
+        Size = UDim2.fromOffset(18, 18), Position = UDim2.new(1, -26, 0, 10),
+        BackgroundColor3 = Color3.fromRGB(32, 28, 45), Text = "X", TextColor3 = Color3.fromRGB(172, 142, 222),
+        TextSize = 9, Font = Enum.Font.GothamBold,
+    }, frame)
+    round(closeB, 5)
+    local box = mk("TextBox", {
+        Size = UDim2.new(1, -24, 0, 28), Position = UDim2.fromOffset(12, 38),
+        BackgroundColor3 = Color3.fromRGB(23, 20, 31), TextColor3 = Color3.fromRGB(246, 240, 255),
+        PlaceholderText = "Paste your key here", PlaceholderColor3 = Color3.fromRGB(172, 142, 222),
+        Text = "", TextSize = 11, Font = Enum.Font.Gotham, ClearTextOnFocus = false,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+    }, frame)
+    round(box, 6)
+    local getB = mk("TextButton", {
+        Size = UDim2.new(0.5, -16, 0, 26), Position = UDim2.fromOffset(12, 74),
+        BackgroundColor3 = Color3.fromRGB(52, 46, 70), Text = "Get Key", TextColor3 = Color3.new(1, 1, 1),
+        TextSize = 11, Font = Enum.Font.GothamBold,
+    }, frame)
+    round(getB, 6)
+    local verB = mk("TextButton", {
+        Size = UDim2.new(0.5, -16, 0, 26), Position = UDim2.new(0.5, 4, 0, 74),
+        BackgroundColor3 = THEME_ACCENT, Text = "Verify", TextColor3 = Color3.new(1, 1, 1),
+        TextSize = 11, Font = Enum.Font.GothamBold,
+    }, frame)
+    round(verB, 6)
+    local status = mk("TextLabel", {
+        Size = UDim2.new(1, -24, 0, 30), Position = UDim2.fromOffset(12, 106), BackgroundTransparency = 1,
+        Text = lastMsg or "Enter your key to continue.", TextColor3 = lastMsg and Color3.fromRGB(255, 120, 120) or Color3.fromRGB(172, 142, 222),
+        TextSize = 10, Font = Enum.Font.Gotham, TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+    }, frame)
+    mk("TextLabel", {
+        Size = UDim2.new(1, -24, 0, 28), Position = UDim2.fromOffset(12, 140), BackgroundTransparency = 1,
+        Text = "Your HWID is used to bind your key and is recorded in the HWID log.",
+        TextColor3 = Color3.fromRGB(110, 98, 140), TextSize = 9, Font = Enum.Font.Gotham, TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+    }, frame)
+
+    local function setStatus(text, bad)
+        status.Text = text
+        status.TextColor3 = bad and Color3.fromRGB(255, 120, 120) or Color3.fromRGB(206, 160, 255)
+    end
+
+    -- drag the window
+    do
+        local dragging, dragStart, startPos
+        frame.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                dragging = true; dragStart = input.Position; startPos = frame.Position
+                input.Changed:Connect(function()
+                    if input.UserInputState == Enum.UserInputState.End then dragging = false end
+                end)
+            end
+        end)
+        UserInputService.InputChanged:Connect(function(input)
+            if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+                local d = input.Position - dragStart
+                frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+            end
+        end)
+    end
+
+    getB.MouseButton1Click:Connect(function()
+        if GETKEY_URL == "" then setStatus("Get Key link is not configured", true); return end
+        if typeof(setclipboard) == "function" and pcall(setclipboard, GETKEY_URL) then
+            setStatus("Link copied. Open it in your browser to get a key.")
+        else
+            setStatus("Get your key here: " .. GETKEY_URL)
+        end
+    end)
+
+    local busy = false
+    verB.MouseButton1Click:Connect(function()
+        if busy then return end
+        local key = (box.Text or ""):gsub("%s+", "")
+        if key == "" then setStatus("Enter your key first.", true); return end
+        busy = true; setStatus("Checking...")
+        task.spawn(function()
+            local ok, msg = verify(key)
+            sendLog(ok and "Key accepted" or "Key rejected", ok and 0x57F287 or 0xED4245, msg, key)
+            if ok then
+                saveKey(key)
+                setStatus(msg)
+                task.wait(0.6)
+                state.ok = true; state.done = true
+            else
+                setStatus(msg, true)
+                busy = false
+            end
+        end)
+    end)
+    closeB.MouseButton1Click:Connect(function() state.done = true end)
+
+    while not state.done do task.wait(0.1) end
+    pcall(function() gui:Destroy() end)
+    return state.ok
+end
+if not keyGate() then return end
+
+local VERSION = "V43 (Minimal UI)"
 local SAVE_FILE = "cfg_a1.json"
 local BASE_RADIUS = 140
 
@@ -56,22 +314,22 @@ local FILTERS = {
     { "Variant", { "Normal", "Silver", "Golden", "Rainbow", "Bloom", "Spirit Bloom", "Parasite", "Fractured", "Scrambled" } },
 }
 local EVENT_DEFS = {
-    { id = "racing", name = "Racing Event (Mounts)", desc = "Balapan tiap 30 mnt, portal muncul di salah satu biome", keywords = { "racing", "race" }, mode = "touch" },
-    { id = "hwdim", name = "Halloween Dimension (gerbang)", desc = "17-24 Okt: gerbang dimensi, telur rahasia", keywords = { "gateway", "dimension" }, mode = "touch" },
-    { id = "hwboss", name = "Halloween Boss", desc = "17-24 Okt: boss & monster dimensi", keywords = { "halloween" }, mode = "attack", tool = "bat" },
-    { id = "scramble", name = "Dr. Scramble Mecha & Drone", desc = "Boss tiap 30 mnt, drop Samples", keywords = { "scramble", "mecha", "drone" }, mode = "attack", tool = "bat" },
-    { id = "rift", name = "Rift & Overlord", desc = "Tiap 30 mnt, drop Boss Tokens", keywords = { "overlord", "rift" }, mode = "attack", tool = "bat" },
-    { id = "butterfly", name = "Butterfly Bloom (Enchanted Forest)", desc = "Tangkap kupu-kupu pakai Net", keywords = { "butterfly" }, mode = "collect", tool = "net" },
-    { id = "admin", name = "Admin Abuse (Sammy)", desc = "Event admin mingguan", keywords = { "sammy" }, mode = "attack", tool = "bat" },
+    { id = "racing", name = "Racing Event (Mounts)", desc = "Race every 30 min, portal spawns in one of the biomes", keywords = { "racing", "race" }, mode = "touch" },
+    { id = "hwdim", name = "Halloween Dimension (gate)", desc = "Oct 17-24: dimension gate, secret eggs", keywords = { "gateway", "dimension" }, mode = "touch" },
+    { id = "hwboss", name = "Halloween Boss", desc = "Oct 17-24: dimension boss & monsters", keywords = { "halloween" }, mode = "attack", tool = "bat" },
+    { id = "scramble", name = "Dr. Scramble Mecha & Drone", desc = "Boss every 30 min, drops Samples", keywords = { "scramble", "mecha", "drone" }, mode = "attack", tool = "bat" },
+    { id = "rift", name = "Rift & Overlord", desc = "Every 30 min, drops Boss Tokens", keywords = { "overlord", "rift" }, mode = "attack", tool = "bat" },
+    { id = "butterfly", name = "Butterfly Bloom (Enchanted Forest)", desc = "Catch butterflies with the Net", keywords = { "butterfly" }, mode = "collect", tool = "net" },
+    { id = "admin", name = "Admin Abuse (Sammy)", desc = "Weekly admin event", keywords = { "sammy" }, mode = "attack", tool = "bat" },
 }
 local SHOPS = {
-    { name = "Shop Utama", info = "Featured: Extinction Egg (Robux)", gui = { "shop" }, world = { "shop" }, exclude = { "boss", "experiment", "lab", "scramble" } },
-    { name = "Experiment Shop", info = "Booster, mutasi Scrambled, Experiment Egg", gui = { "experiment" }, world = { "experiment" }, exclude = {} },
-    { name = "Dr. Scramble's Lab", info = "Tukar 3 egg jadi pet eksperimen (jalan ke NPC/lab lalu tekan prompt)", gui = { "laboratory", "lab", "scramble" },
+    { name = "Main Shop", info = "Featured: Extinction Egg (Robux)", gui = { "shop" }, world = { "shop" }, exclude = { "boss", "experiment", "lab", "scramble" } },
+    { name = "Experiment Shop", info = "Boosters, Scrambled mutation, Experiment Egg", gui = { "experiment" }, world = { "experiment" }, exclude = {} },
+    { name = "Dr. Scramble's Lab", info = "Trade 3 eggs for an experiment pet (walk to the NPC/lab, then press the prompt)", gui = { "laboratory", "lab", "scramble" },
       world = { "laboratory", "lab", "scramble", "drscramble", "scientist" },
       exclude = { "label", "available", "collab", "scrambled", "mecha", "drone", "boss", "event", "timer" },
       worldExclude = { "label", "available", "collab", "scrambled", "mecha", "drone", "overlord" } },
-    { name = "Boss Shop", info = "Hadiah dari Rift / Overlord", gui = { "boss shop", "bossshop" }, world = { "bossshop", "boss shop" }, exclude = {} },
+    { name = "Boss Shop", info = "Rewards from Rift / Overlord", gui = { "boss shop", "bossshop" }, world = { "bossshop", "boss shop" }, exclude = {} },
 }
 local THEME = {
     bg1 = Color3.fromRGB(20, 8, 36), bg2 = Color3.fromRGB(5, 2, 10),
@@ -244,12 +502,12 @@ local function setStatus(text, color)
     if ui.statusDot then ui.statusDot.BackgroundColor3 = color or THEME.sub end
 end
 local function refreshStats()
-    if ui.statsText then ui.statsText.Text = ("Berhasil: %d    Gagal: %d"):format(stats.stolen, stats.failed) end
+    if ui.statsText then ui.statsText.Text = ("Stolen: %d    Failed: %d"):format(stats.stolen, stats.failed) end
     if ui.modeText then
-        local move = config.method == "Fly" and "Terbang" or "Jalan"
-        local target = config.targetMode == "All" and "Semua" or "Filter"
+        local move = config.method == "Fly" and "Fly" or "Walk"
+        local target = config.targetMode == "All" and "All" or "Filter"
         local areaCount = 0; for _ in pairs(config.areas) do areaCount += 1 end
-        ui.modeText.Text = ("Gerak: %s   Target: %s   Area: %s"):format(move, target, areaCount > 0 and (areaCount .. " dipilih") or "semua")
+        ui.modeText.Text = ("Move: %s   Target: %s   Area: %s"):format(move, target, areaCount > 0 and (areaCount .. " selected") or "all")
     end
 end
 
@@ -732,7 +990,7 @@ function V40.refreshAreaCenters(force)
                 local d = (p - mean).Magnitude
                 if d < bd then best, bd = p, d end
             end
-            if not V40.areaAuto[area] then log(("Titik area %s ketemu otomatis (%d slot)"):format(area, #list)) end
+            if not V40.areaAuto[area] then log(("Area point %s found automatically (%d slots)"):format(area, #list)) end
             areaCenters[area] = best; V40.areaAuto[area] = #list
             if V40.areaCached then V40.areaCached[area] = nil end
         end
@@ -768,7 +1026,7 @@ function V40.scanLandmarks(groups)
         if not areaCenters[nm] or (V40.areaCached and V40.areaCached[nm]) then
             areaCenters[nm] = pos; V40.areaAuto[nm] = 1
             if V40.areaCached then V40.areaCached[nm] = nil end
-            log(("Titik area %s ketemu otomatis (penanda area)"):format(nm))
+            log(("Area point %s found automatically (area marker)"):format(nm))
         end
     end
 end
@@ -873,17 +1131,17 @@ local function findTarget(hrp, silent)
     end
     if not best and not silent and os.clock() - lastNoTargetLog > 3 then
         lastNoTargetLog = os.clock()
-        log(("Tidak ada target | prompt %d | milik sendiri %d | filter %d | area %d | tanpa posisi %d | diblok %d")
+        log(("No target | prompts %d | own %d | filtered %d | area %d | no position %d | blocked %d")
             :format(c.total, c.mine, c.filtered, c.area, c.nopos, c.banned))
         if c.filtered > 0 and c.sample then
-            log("Contoh telur ditolak filter -> " .. c.sample)
-            log("Jika rarity/variant tidak muncul di teks itu, filter tidak bisa membacanya. Coba mode 'Semua telur' atau kirim teks ini.")
+            log("Example egg rejected by filter -> " .. c.sample)
+            log("If rarity/variant does not appear in that text, the filter cannot read it. Try target mode 'All' or send this text.")
         end
         if next(config.areas) ~= nil and not config.legit and c.area > 0 and c.area == c.total - c.mine - c.nopos - c.banned then
-            log("Semua telur yang terlihat ada di area yang TIDAK dipilih. Karakter akan menuju area yang dipilih.")
+            log("All visible eggs are in areas that are NOT selected. The character will head to a selected area.")
         end
         if c.total > 0 and c.mine == c.total then
-            log("Semua telur dianggap milik sendiri. Matikan 'Lewati telur milik sendiri' di tab Main.")
+            log("All eggs are treated as your own. Turn off 'Skip own eggs' in the MAIN tab.")
         end
     end
     return best, c
@@ -1013,12 +1271,12 @@ function Safe.border()
     end
     local edgeMid = z.center + dir * ext
     local inward = -dir
-    local desc = "tengah sisi Safe Zone '" .. z.inst.Name .. "' yang menghadap Forest"
+    local desc = "middle of Safe Zone '" .. z.inst.Name .. "' side facing Forest"
     local anchorPt = edgeMid
     local line = Safe.findLine(edgeMid, tangent)
     if line then
         anchorPt = Vector3.new(line.Position.X, edgeMid.Y, line.Position.Z)
-        desc = "tengah garis '" .. line.Name .. "' (Safe Zone '" .. z.inst.Name .. "' <-> Forest)"
+        desc = "middle of line '" .. line.Name .. "' (Safe Zone '" .. z.inst.Name .. "' <-> Forest)"
     end
     return { stand = anchorPt + inward * Safe.INSET, inward = inward, tan = tangent, topY = z.topY, desc = desc }
 end
@@ -1048,7 +1306,7 @@ function V25.safeBasePos()
     local okB, p, info = pcall(V25.safeBorderPos)
     if okB and p then
         pos = p
-        if info and Safe.lastDesc ~= info.desc then Safe.lastDesc = info.desc; log("Titik aman: " .. info.desc) end
+        if info and Safe.lastDesc ~= info.desc then Safe.lastDesc = info.desc; log("Safe spot: " .. info.desc) end
     end
     if not pos then
         if not baseCFrame then return nil end
@@ -1072,7 +1330,7 @@ function V25.safeBasePos()
         pos = ok and result or fallback
         if Safe.lastDesc ~= "fallback" then
             Safe.lastDesc = "fallback"
-            log("Safe Zone tidak terdeteksi, pakai sekitar base. Berdiri di tengah perbatasan lalu tekan 'Set Titik Aman'.")
+            log("Safe Zone not detected, using the area around base. Stand in the middle of the border and tap 'Set Safe Spot'.")
         end
     end
     Safe.cache, Safe.key, Safe.t = pos, key, os.clock()
@@ -1110,17 +1368,63 @@ function V25.pathTop(a, b)
     end
     return top
 end
+-- cari tanah kering (bukan air/lava) terdekat dari posisi
+function V25.nearestDry(pos)
+    for _, r in ipairs({ 8, 16, 26, 40, 60 }) do
+        for i = 0, 11 do
+            local a = (i / 12) * math.pi * 2
+            local x, z = pos.X + math.cos(a) * r, pos.Z + math.sin(a) * r
+            local res = Safe.ray(x, pos.Y + 80, z, 300)
+            if res and res.Normal.Y > 0.7 and not Safe.hazard(res) and res.Position.Y > Workspace.FallenPartsDestroyHeight + 40 then
+                local cand = res.Position + Vector3.new(0, 3, 0)
+                if Safe.clear(cand) then return cand end
+            end
+        end
+    end
+    return nil
+end
 -- mendarat pelan ke tanah (tidak dibiarkan jatuh dari ketinggian / ke void)
+-- V42: di area jauh tanah belum termuat (StreamingEnabled). Dulu itu dianggap "tidak aman" lalu karakter diteleport PULANG ke base
+-- (penyebab bug "balik ke tempat awal terus"). Sekarang: tahan di udara, minta server memuat area, tunggu sampai tanah ada.
 function V25.softLand(hrp)
     if not hrp or not hrp.Parent then return end
     Protect.flying = true
     pcall(function()
         local _, hum = getChar()
         if hum then hum.PlatformStand = false; hum.Sit = false end
-        local res = Safe.ray(hrp.Position.X, hrp.Position.Y, hrp.Position.Z, 600)
-        if not res or Safe.hazard(res) or res.Position.Y < Workspace.FallenPartsDestroyHeight + 20 then
+        local lowY = Workspace.FallenPartsDestroyHeight + 20
+        local function ground()
+            local h = getHRP(); if not h then return nil end
+            local r = Safe.ray(h.Position.X, h.Position.Y, h.Position.Z, 600)
+            if r and r.Position.Y >= lowY then return r end
+            return nil
+        end
+        local function goHome(why)
+            if os.clock() - (V25.landLog or -100) > 20 then V25.landLog = os.clock(); log(why) end
             local safe = V25.safeBasePos()
             if safe then V25.safeTeleport(CFrame.new(safe) * (hrp.CFrame - hrp.CFrame.Position)) end
+        end
+        local res = ground()
+        if not res then
+            pcall(function() hrp.Anchored = true; hrp.AssemblyLinearVelocity = Vector3.zero; hrp.AssemblyAngularVelocity = Vector3.zero end)
+            local t0 = os.clock()
+            while os.clock() - t0 < 10 do
+                local h = getHRP(); if not h or h ~= hrp then break end
+                V25.streamTo(h.Position, 2)
+                res = ground()
+                if res then break end
+                task.wait(0.25)
+            end
+            pcall(function() hrp.Anchored = false end)
+            if not res then goHome("Ground at the destination did not load after 10 s, returning to a safe spot"); return end
+        end
+        if Safe.hazard(res) then
+            local spot = V25.nearestDry(hrp.Position)
+            if spot then
+                V25.safeTeleport(CFrame.new(spot) * (hrp.CFrame - hrp.CFrame.Position))
+            else
+                goHome("No dry ground near the destination, returning to a safe spot")
+            end
             return
         end
         local goalY = res.Position.Y + 3
@@ -1135,6 +1439,7 @@ function V25.softLand(hrp)
         end
         hrp.AssemblyLinearVelocity = Vector3.zero; hrp.AssemblyAngularVelocity = Vector3.zero
     end)
+    pcall(function() local h = getHRP(); if h and h.Anchored then h.Anchored = false end end)
     Protect.flying = false
 end
 
@@ -1206,13 +1511,20 @@ function V25.flyRoute(hrp, targetPos, alive)
     local speed = config.flySpeed
     V25.flyCarry = 0
     if (hrp.Position - targetPos).Magnitude < 15 then return flyTo(hrp, targetPos, speed, alive) end
-    if (hrp.Position - targetPos).Magnitude > 150 then task.spawn(function() V25.streamTo(targetPos, 3) end) end
+    local farRoute = (hrp.Position - targetPos).Magnitude > 150
+    if farRoute then task.spawn(function() V25.streamTo(targetPos, 3) end) end
     local cruiseY = math.max(hrp.Position.Y, targetPos.Y) + config.flyHeight
     local okTop, top = pcall(V25.pathTop, hrp.Position, targetPos)
     if okTop and top then cruiseY = math.max(cruiseY, top + 8) end
     cruiseY = math.min(cruiseY, math.max(hrp.Position.Y, targetPos.Y) + 200)
     if not flyTo(hrp, Vector3.new(hrp.Position.X, cruiseY, hrp.Position.Z), speed, alive, 2.5) then return false end
     if not flyTo(hrp, Vector3.new(targetPos.X, cruiseY, targetPos.Z), speed, alive, 12, config.flyHeight + 6) then return false end
+    if farRoute and hrp.Parent then
+        -- sudah di atas tujuan: tahan sebentar & minta server memuat tanah/telur di bawah sebelum turun
+        pcall(function() hrp.Anchored = true; hrp.AssemblyLinearVelocity = Vector3.zero end)
+        V25.streamTo(targetPos, 3)
+        pcall(function() hrp.Anchored = false end)
+    end
     return flyTo(hrp, targetPos, speed, alive)
 end
 local function goTo(hrp, targetPos, alive)
@@ -1231,8 +1543,8 @@ local function validWebhook(url)
         or url:match("^https://[%w%.]*discordapp%.com/api/webhooks/") ~= nil
 end
 local function postWebhook(url, payload)
-    if not validWebhook(url) then return false, "URL webhook tidak valid" end
-    if not httpRequest then return false, "executor tidak punya request" end
+    if not validWebhook(url) then return false, "Invalid webhook URL" end
+    if not httpRequest then return false, "executor has no request function" end
     local ok, res = pcall(httpRequest, { Url = url, Method = "POST", Headers = { ["Content-Type"] = "application/json" }, Body = HttpService:JSONEncode(payload) })
     if not ok then return false, tostring(res) end
     local code = res and (res.StatusCode or res.status_code)
@@ -1248,7 +1560,7 @@ local function queueWebhook(url, payload)
         while #webhookQueue > 0 and uiAlive do
             local item = table.remove(webhookQueue, 1)
             local ok, err = postWebhook(item.url, item.payload)
-            if not ok then log("Webhook gagal: " .. tostring(err)) end
+            if not ok then log("Webhook failed: " .. tostring(err)) end
             task.wait(1.3)
         end
         webhookWorker = false
@@ -1295,7 +1607,7 @@ local function stringAttr(root, keys)
 end
 -- dipanggil SEBELUM telur diambil (setelah diambil, isi model bisa hilang)
 local function describeEgg(root)
-    if not root then return { name = "Telur", rarity = "-", variant = "Normal", size = "-", detail = "" } end
+    if not root then return { name = "Egg", rarity = "-", variant = "Normal", size = "-", detail = "" } end
     local okText, text = pcall(collectEggText, root)
     if not okText or type(text) ~= "string" then text = root.Name:lower() end
     local function hitsOf2(cat)
@@ -1349,17 +1661,17 @@ local function resolveEggImage(info)
 end
 local function sendEggWebhook(info)
     if not config.eggWebhookOn then return end
-    local total = ("%d berhasil / %d gagal"):format(stats.stolen, stats.failed)
+    local total = ("%d stolen / %d failed"):format(stats.stolen, stats.failed)
     task.spawn(function()
         local okImg, img = pcall(resolveEggImage, info)
-        local payload = embedPayload("🥚 Telur didapat", WEBHOOK_COLOR, {
-            { name = "Nama Telur", value = cut(info.name, 200), inline = false },
+        local payload = embedPayload("🥚 Egg obtained", WEBHOOK_COLOR, {
+            { name = "Egg Name", value = cut(info.name, 200), inline = false },
             { name = "Rarity", value = cut(info.rarity or "-", 100), inline = true },
             { name = "Variant", value = cut(info.variant or "Normal", 100), inline = true },
             { name = "Size", value = cut(info.size or "-", 100), inline = true },
             { name = "Area", value = info.area or "-", inline = true },
-            { name = "Pemain", value = player.DisplayName, inline = true },
-            { name = "Total sesi", value = total, inline = true },
+            { name = "Player", value = player.DisplayName, inline = true },
+            { name = "Session total", value = total, inline = true },
         })
         if okImg and img then payload.embeds[1].image = { url = img } end
         queueWebhook(config.eggWebhookUrl, payload)
@@ -1398,7 +1710,7 @@ local function readStats()
     local money, moneySrc = findStatValue({ "cash", "money", "coin" }, "$")
     if money == nil then money, moneySrc = findStatValue({ "cash", "money", "coin" }, nil) end
     local function fmt(v)
-        if v == nil then return "tidak terbaca" end
+        if v == nil then return "unreadable" end
         if type(v) == "number" then return abbr(v) end
         return tostring(v)
     end
@@ -1413,13 +1725,13 @@ local function sendStatsWebhook(force)
     if not force and not config.statsWebhookOn then return end
     local s = readStats()
     local up = math.floor((os.clock() - sessionStart) / 60)
-    queueWebhook(config.statsWebhookUrl, embedPayload("📊 Laporan AFK", WEBHOOK_COLOR, {
+    queueWebhook(config.statsWebhookUrl, embedPayload("📊 AFK Report", WEBHOOK_COLOR, {
         { name = "Speed", value = s.speed, inline = true },
-        { name = "Uang", value = s.money, inline = true },
+        { name = "Money", value = s.money, inline = true },
         { name = "Ping", value = currentPing() .. " ms", inline = true },
-        { name = "Telur", value = ("%d berhasil / %d gagal"):format(stats.stolen, stats.failed), inline = true },
-        { name = "Durasi sesi", value = up .. " menit", inline = true },
-        { name = "Pemain", value = player.DisplayName, inline = true },
+        { name = "Eggs", value = ("%d stolen / %d failed"):format(stats.stolen, stats.failed), inline = true },
+        { name = "Session length", value = up .. " min", inline = true },
+        { name = "Player", value = player.DisplayName, inline = true },
     }))
 end
 local statsToken = 0
@@ -1533,16 +1845,16 @@ local function findTreadmill()
     if mine and mine.Parent and not Treadmill.banned[mine] then
         if Treadmill.inst ~= mine then
             Treadmill.inst = mine; Treadmill.notified = false
-            log("Treadmill dipilih: " .. mine:GetFullName() .. " [papan nama plot: " .. player.DisplayName .. "]")
+            log("Treadmill selected: " .. mine:GetFullName() .. " [plot sign: " .. player.DisplayName .. "]")
         end
-        Treadmill.how = "papan nama plot"
+        Treadmill.how = "plot sign"
         return mine
     end
     if Workspace:FindFirstChild("Plots") then
         -- struktur Plots dikenal: jangan menebak treadmill lain (plot kosong/orang lain). Tunggu papan nama atau pakai "Set Treadmill".
-        local why = mp and "plot-treadmill-di-ban" or "plot-belum-ketemu"
+        local why = mp and "plot-treadmill-banned" or "plot-not-found"
         if Treadmill.how ~= why then
-            log(mp and "Treadmill plotmu sedang dilewati sementara (gagal dijangkau)" or "Plot sendiri belum terbaca dari papan nama. Tunggu sebentar atau pakai tombol Set Treadmill")
+            log(mp and "Your plot treadmill is temporarily skipped (could not be reached)" or "Own plot not read from the sign yet. Wait a moment or use Set Treadmill")
             Treadmill.how = why
         end
         Treadmill.inst = nil
@@ -1566,7 +1878,7 @@ local function findTreadmill()
     -- 1) ada penanda pemilik yang jelas = milikku
     for _, e in ipairs(all) do
         e.who = treadmillOwnerInfo(e.inst)
-        if e.who == "me" then pick, how = e, "milik sendiri (terdeteksi)"; break end
+        if e.who == "me" then pick, how = e, "own (detected)"; break end
     end
     -- 2) tidak ada penanda: HANYA treadmill paling dekat dari base, jaraknya dekat, bukan milik orang lain,
     --    dan tidak ada pemain lain berdiri di sekitarnya. Selain itu -> tidak ditebak (hindari naik treadmill orang).
@@ -1574,12 +1886,12 @@ local function findTreadmill()
         local n = all[1]
         n.who = n.who or treadmillOwnerInfo(n.inst)
         if n.who ~= "other" and n.dist <= 60 and not Treadmill.othersNear(n.pos, 18) then
-            pick, how = n, "terdekat dari base"
+            pick, how = n, "nearest to base"
         end
     end
     if pick then
         Treadmill.inst = pick.inst
-        if Treadmill.how ~= how then log("Treadmill dipilih: " .. pick.inst:GetFullName() .. " [" .. how .. "]") end
+        if Treadmill.how ~= how then log("Treadmill selected: " .. pick.inst:GetFullName() .. " [" .. how .. "]") end
         Treadmill.how = how
         Treadmill.notified = false
         return pick.inst
@@ -1589,7 +1901,7 @@ end
 -- tombol "Set Treadmill": berdiri di atas treadmill-mu lalu tekan -> script mengunci treadmill itu
 function Treadmill.setFromPlayer()
     local hrp = getHRP()
-    if not hrp then return false, "Karakter belum ada" end
+    if not hrp then return false, "Character not loaded yet" end
     local found
     local rp = RaycastParams.new()
     rp.FilterType = Enum.RaycastFilterType.Exclude
@@ -1614,7 +1926,7 @@ function Treadmill.setFromPlayer()
             end
         end
     end
-    if not found then return false, "Tidak ada treadmill di bawah/dekat karaktermu (radius 14 stud)" end
+    if not found then return false, "No treadmill under/near your character (radius 14 studs)" end
     Treadmill.manual = found
     Treadmill.inst = found
     Treadmill.how = "manual"
@@ -1667,7 +1979,7 @@ function Treadmill.approach(inst, belt)
         if not brainWanted() then return false end
         local h, hm = getChar(); if not h or not hm or hm.Health <= 0 then return false end
         if Treadmill.on(inst, h) then return true end
-        setStatus("Menuju treadmill (" .. attempt .. "/3)...", THEME.accent2)
+        setStatus("Heading to treadmill (" .. attempt .. "/3)...", THEME.accent2)
         goTo(h, config.method == "Fly" and stand or surface, brainWanted)
         task.wait(0.2)
         h, hm = getChar(); if not h or not hm then return false end
@@ -1684,7 +1996,7 @@ function Treadmill.approach(inst, belt)
     if not config.legit then
         local h = getHRP()
         if h then
-            log("Treadmill: jalan kaki gagal, pindah langsung ke treadmill")
+            log("Treadmill: walking failed, moving straight to the treadmill")
             h.AssemblyLinearVelocity = Vector3.zero
             h.CFrame = CFrame.new(stand) * (h.CFrame - h.CFrame.Position)
             task.wait(0.5)
@@ -1698,16 +2010,16 @@ function Treadmill.run(duration)
     if not hrp or not hum then task.wait(1); return end
     local inst = findTreadmill()
     if not inst then
-        if not Treadmill.notified then Treadmill.notified = true; log("Treadmill milikmu tidak terdeteksi dengan yakin. Berdiri DI ATAS treadmill-mu lalu tekan 'Set Treadmill' (tab Main).") end
-        setStatus("Idle (treadmill tidak ada)", THEME.warn)
+        if not Treadmill.notified then Treadmill.notified = true; log("Your treadmill was not detected reliably. Stand ON your treadmill and tap 'Set Treadmill' (MAIN tab).") end
+        setStatus("Idle (no treadmill)", THEME.warn)
         task.wait(duration); return
     end
     local belt = Treadmill.belt(inst)
     if not belt then task.wait(duration); return end
     -- pengaman: kalau bukan pilihan manual / bukan terdeteksi milik sendiri dan ada pemain lain di dekatnya -> batalkan
-    if not Treadmill.manual and Treadmill.how ~= "milik sendiri (terdeteksi)" and Treadmill.othersNear(belt.Position, 14) then
+    if not Treadmill.manual and Treadmill.how ~= "own (detected)" and Treadmill.othersNear(belt.Position, 14) then
         Treadmill.banned[inst] = true; Treadmill.reset()
-        log("Treadmill dibatalkan: ada pemain lain di dekatnya (kemungkinan milik orang). Pakai tombol 'Set Treadmill' bila ini memang milikmu.")
+        log("Treadmill cancelled: another player is nearby (probably theirs). Use 'Set Treadmill' if it is really yours.")
         task.wait(duration); return
     end
     setStatus("Treadmill (idle)", THEME.good)
@@ -1716,7 +2028,7 @@ function Treadmill.run(duration)
         if not Treadmill.approach(inst, belt) then
             Protect.treadmillActive = false
             Treadmill.fails = (Treadmill.fails or 0) + 1
-            if Treadmill.fails >= 3 then Treadmill.reset(); Treadmill.fails = 0; log("Treadmill gagal dijangkau, mencari ulang") end
+            if Treadmill.fails >= 3 then Treadmill.reset(); Treadmill.fails = 0; log("Treadmill unreachable, searching again") end
             task.wait(1.5); return
         end
         Treadmill.fails = 0
@@ -1861,7 +2173,7 @@ do
         local speed = math.max(hum.WalkSpeed, 8)
         local limit = math.max(12, flatDist(hrp.Position, dest) / speed * 2 + 10)
         local t0 = os.clock()
-        setStatus("Berjalan...", THEME.accent2)
+        setStatus("Walking...", THEME.accent2)
         local function nudgeIfStuck(state)
             local now = os.clock()
             if now - state.t >= 1 then
@@ -1983,6 +2295,9 @@ do
 end
 
 local lastSweep = 0; local sweepIdx = 0; local lastMissingLog = 0
+function V40.holdingArea()
+    return config.running and next(config.areas) ~= nil and os.clock() - (V40.holdT or -100) < 60
+end
 local function waitForTarget(hrp, alive)
     local target = findTarget(hrp, false)
     if target then return target end
@@ -2008,10 +2323,10 @@ local function waitForTarget(hrp, alive)
     if #missing > 0 and os.clock() - lastMissingLog > 30 then
         lastMissingLog = os.clock()
         table.sort(missing)
-        log("Titik area belum ketemu otomatis: " .. table.concat(missing, ", ") .. " (slot telurnya belum terbaca). Jalan ke area itu sebentar, atau buka tab AREA lalu tekan SET saat berdiri di sana.")
+        log("Area point not found automatically: " .. table.concat(missing, ", ") .. " (egg slots not read yet). Walk to that area for a moment, or open the AREA tab and tap SET while standing there.")
     end
     if #visit == 0 then
-        if areaOn then setStatus("Titik area belum ketemu", THEME.warn) end
+        if areaOn then setStatus("Area point not found", THEME.warn) end
         return nil
     end
     local picked = {}
@@ -2019,12 +2334,20 @@ local function waitForTarget(hrp, alive)
     for i = 1, n do sweepIdx = sweepIdx % #visit + 1; table.insert(picked, visit[sweepIdx]) end
     for _, v in ipairs(picked) do
         if not alive() then return nil end
-        setStatus("Menuju area " .. v.name .. "...", THEME.warn)
+        setStatus("Heading to area " .. v.name .. "...", THEME.warn)
         pcall(function() player:RequestStreamAroundAsync(v.pos, 3) end)
         goTo(hrp, v.pos + Vector3.new(0, 3, 0), alive)
+        if areaOn then V40.holdT = os.clock() end
+        -- di tujuan: minta slot telur area itu dimuat, lalu tunggu (area jauh butuh beberapa detik)
+        local hNow = getHRP()
+        if hNow and areaOn then V25.streamTo(hNow.Position, 3) end
         local t0 = os.clock()
-        repeat task.wait(0.5); target = findTarget(hrp, true)
-        until target or not alive() or os.clock() - t0 > 4
+        repeat
+            task.wait(0.5); target = findTarget(hrp, true)
+            if areaOn and not target and os.clock() - t0 > 3 and os.clock() - t0 < 3.6 then
+                local h3 = getHRP(); if h3 then V25.streamTo(h3.Position, 3) end
+            end
+        until target or not alive() or os.clock() - t0 > (areaOn and 10 or 4)
         if target then return target end
     end
     -- bila area dipilih, tetap di area (jangan balik ke base) lalu cek area berikutnya di siklus berikut
@@ -2100,14 +2423,14 @@ local function instantStealCycle(target, alive)
     target.info = describeEgg(target.root)
     if target.pos.Y < Workspace.FallenPartsDestroyHeight + 30 then
         stats.failed += 1; banned[prompt] = os.clock() + 30
-        log("Telur terlalu rendah (dekat void), dilewati"); refreshStats(); return "failed"
+        log("Egg is too low (near the void), skipped"); refreshStats(); return "failed"
     end
     local origin = hrp.CFrame
     local safeP = V25.safeBasePos()
     local dest = safeP and (CFrame.new(safeP) * (origin - origin.Position)) or origin
     local far = (hrp.Position - target.pos).Magnitude > 120
     if far then
-        setStatus("Memuat area telur...", THEME.accent2)
+        setStatus("Loading egg area...", THEME.accent2)
         V25.streamTo(target.pos, 3)
         if not alive() then return "none" end
         hrp, hum = getChar()
@@ -2120,16 +2443,16 @@ local function instantStealCycle(target, alive)
     end
     if not spot then
         stats.failed += 1; banned[prompt] = os.clock() + 60
-        log("Tidak ada titik berdiri aman di dekat telur (bahaya/air/terhalang), dilewati 60 detik"); refreshStats(); return "failed"
+        log("No safe standing spot near the egg (hazard/water/blocked), skipped for 60 s"); refreshStats(); return "failed"
     end
     local result, damaged = "failed", false
     local startHp = hum.Health
     local hpConn = hum.HealthChanged:Connect(function(h) if h < startHp - 0.5 then damaged = true end end)
     local okRun, errRun = pcall(function()
         hum.Sit = false
-        setStatus("Teleport instan...", THEME.accent)
+        setStatus("Instant teleport...", THEME.accent)
         if not V25.safeTeleport(CFrame.lookAt(spot, Vector3.new(target.pos.X, spot.Y, target.pos.Z))) then
-            log("Tanah di dekat telur belum termuat, dibatalkan")
+            log("Ground near the egg is not loaded yet, cancelled")
             result = "failed"; return
         end
         task.wait(0.12)
@@ -2138,7 +2461,7 @@ local function instantStealCycle(target, alive)
             while alive() and prompt.Parent and not prompt.Enabled and not damaged and os.clock() - t0 < 1.0 do task.wait(0.1) end
             if prompt.Parent and not prompt.Enabled then pcall(function() prompt.Enabled = true end) end
         end
-        setStatus("Mengambil telur...", THEME.accent)
+        setStatus("Taking egg...", THEME.accent)
         local success = V25.grabEgg(prompt, alive, false, function() return damaged end)
         if not success and not alive() then result = "none"; return end
         result = success and "stolen" or "failed"
@@ -2157,28 +2480,28 @@ local function instantStealCycle(target, alive)
     end
     local _, hm3 = getChar()
     local died = (not hm3) or hm3.Health <= 0
-    if not okRun then log("Steal instan error: " .. tostring(errRun)); result = "failed" end
+    if not okRun then log("Instant steal error: " .. tostring(errRun)); result = "failed" end
     if died then
         result = "failed"
         V25.instantDeaths += 1
         V25.banEggArea(target.pos, 35, 300)
-        log("Mati saat steal instan di dekat telur ini. Area itu di-blok 5 menit.")
+        log("Died during an instant steal near this egg. That spot is blocked for 5 min.")
         if V25.instantDeaths >= 2 then
             V25.instantPauseUntil = os.clock() + 120
             V25.instantDeaths = 0
-            log("Mati 2x berturut-turut: steal instan dijeda 2 menit, pakai steal biasa dulu.")
+            log("Died twice in a row: instant steal paused for 2 min, using normal steal.")
         end
     elseif damaged then
         V25.banEggArea(target.pos, 30, 180)
-        log("Kena damage di lokasi telur, kabur ke titik aman. Area itu di-blok 3 menit.")
+        log("Took damage at the egg, fled to a safe spot. That spot is blocked for 3 min.")
     end
     if result == "stolen" then
         V25.instantDeaths = 0
-        stats.stolen += 1; log("Telur berhasil diambil (teleport instan)")
+        stats.stolen += 1; log("Egg taken (instant teleport)")
         local info = target.info or describeEgg(target.root); info.area = target.area; sendEggWebhook(info)
     elseif result == "failed" then
         stats.failed += 1; banned[prompt] = os.clock() + 20
-        if not died then log("Gagal mengambil telur, dilewati 20 detik") end
+        if not died then log("Failed to take the egg, skipped for 20 s") end
     end
     refreshStats()
     return result
@@ -2188,27 +2511,27 @@ local function stealCycle(alive)
     local hrp, hum = getChar()
     if not hrp or not hum or hum.Health <= 0 then task.wait(1); return "none" end
     ensureBase()
-    setStatus("Mencari telur...", THEME.accent2)
+    setStatus("Looking for eggs...", THEME.accent2)
     local target = waitForTarget(hrp, alive)
     if not alive() then return "none" end
-    if not target then setStatus("Tidak ada telur", THEME.warn); return "none" end
+    if not target then setStatus("No eggs", THEME.warn); return "none" end
     local prompt = target.prompt
     target.info = describeEgg(target.root)
-    log(("Target: %s (%d stud%s)"):format(prompt:GetFullName(), math.floor(target.dist), target.enabled and "" or ", prompt nonaktif"))
+    log(("Target: %s (%d stud%s)"):format(prompt:GetFullName(), math.floor(target.dist), target.enabled and "" or ", prompt disabled"))
     if config.instantSteal and not config.legit then
         if os.clock() >= V25.instantPauseUntil then return instantStealCycle(target, alive) end
         if not V25.pauseLogged or os.clock() - V25.pauseLogged > 60 then
-            V25.pauseLogged = os.clock(); log("Steal instan sedang dijeda (habis mati), memakai steal biasa")
+            V25.pauseLogged = os.clock(); log("Instant steal is paused (after dying), using normal steal")
         end
     end
-    setStatus(config.method == "Fly" and not config.legit and "Terbang..." or "Berjalan...", THEME.accent2)
+    setStatus(config.method == "Fly" and not config.legit and "Flying..." or "Walking...", THEME.accent2)
     local reached
     if config.legit then reached = V25.legitWalk(target.pos, alive)
     else reached = goTo(hrp, target.pos + Vector3.new(0, 3, 0), alive) end
     if not alive() then return "none" end
     if not reached and hrp.Parent and (hrp.Position - target.pos).Magnitude > 25 then
         stats.failed += 1; banned[prompt] = os.clock() + 15
-        log("Gagal mencapai telur, dilewati 15 detik"); refreshStats(); return "failed"
+        log("Could not reach the egg, skipped for 15 s"); refreshStats(); return "failed"
     end
     task.wait(0.3)
     hrp = getHRP() or hrp
@@ -2217,21 +2540,21 @@ local function stealCycle(alive)
         while alive() and prompt.Parent and not prompt.Enabled and os.clock() - t0 < 2 do task.wait(0.1) end
         if prompt.Parent and not prompt.Enabled and not config.legit then pcall(function() prompt.Enabled = true end) end
     end
-    setStatus("Mengambil telur...", THEME.accent)
+    setStatus("Taking egg...", THEME.accent)
     local success = V25.grabEgg(prompt, alive, config.legit)
     if not alive() then return "none" end
     local result
     if success then
-        stats.stolen += 1; result = "stolen"; log("Telur berhasil diambil")
+        stats.stolen += 1; result = "stolen"; log("Egg taken")
         local info = target.info or describeEgg(target.root); info.area = target.area; sendEggWebhook(info)
     else
         stats.failed += 1; result = "failed"; banned[prompt] = os.clock() + 20
-        log("Gagal mengambil telur, dilewati 20 detik")
+        log("Failed to take the egg, skipped for 20 s")
     end
     refreshStats()
     hrp = getHRP() or hrp
     if baseCFrame and alive() then
-        setStatus("Pulang ke base...", THEME.good)
+        setStatus("Returning to base...", THEME.good)
         local homePos = V25.safeBasePos() or baseCFrame.Position
         if config.legit then V25.legitWalk(homePos, alive)
         else goTo(hrp, homePos, alive) end
@@ -2335,7 +2658,7 @@ local function runEvent(def, t, alive)
             if not tool or tool.Parent ~= player.Character then
                 tool = equipTool(def.tool)
                 if not tool then
-                    log("Tool " .. tostring(def.tool) .. " tidak ada di backpack")
+                    log("Tool " .. tostring(def.tool) .. " not found in backpack")
                     EventBan[inst] = os.clock() + 30
                     break
                 end
@@ -2464,11 +2787,11 @@ function V25.logNearbyPrompts(tag)
             if pos and (pos - hrp.Position).Magnitude <= 20 then
                 seen += 1
                 if seen > 4 then break end
-                log(("%s: prompt dekat aksi='%s' objek='%s' aktif=%s (%s)"):format(tag, tostring(p.ActionText), tostring(p.ObjectText), tostring(p.Enabled), p.Parent.Name))
+                log(("%s: nearby prompt action='%s' object='%s' enabled=%s (%s)"):format(tag, tostring(p.ActionText), tostring(p.ObjectText), tostring(p.Enabled), p.Parent.Name))
             end
         end
     end
-    if seen == 0 then log(tag .. ": tidak ada prompt dalam 20 stud") end
+    if seen == 0 then log(tag .. ": no prompt within 20 studs") end
 end
 local function autoHatchOnce()
     ensureBase()
@@ -2492,7 +2815,7 @@ local function autoHatchOnce()
     end
     if count == 0 then count = actOnPrompts(HINTS.hatch) end
     if count > 0 then log("Auto Hatch: " .. count)
-    elseif #eggs > 0 then log("Auto Hatch: " .. #eggs .. " telur di plot, prompt Hatch belum muncul (belum siap?)") end
+    elseif #eggs > 0 then log("Auto Hatch: " .. #eggs .. " eggs on plot, Hatch prompt not shown yet (not ready?)") end
 end
 local function eggToolMatches(tool)
     local text = tool.Name:lower()
@@ -2560,7 +2883,7 @@ local function autoPlaceOnce()
         local a = V25.myPlotAnchor()
         if a then table.insert(spots, a) end
     end
-    if #spots == 0 then log("Auto Place: plot sendiri tidak ditemukan"); return end
+    if #spots == 0 then log("Auto Place: own plot not found"); return end
     local before = #V25.myPlacedEggs()
     -- percobaan sebelumnya gagal dengan jumlah telur plot yang sama (kemungkinan slot penuh): jangan keliling lagi,
     -- tunggu sampai ada telur yang di-hatch (jumlah berubah)
@@ -2584,12 +2907,12 @@ local function autoPlaceOnce()
         task.wait(0.8)
         if toolGone() or #V25.myPlacedEggs() > before then
             V25.placeFullAt = nil
-            log("Auto Place: telur ditaruh")
+            log("Auto Place: egg placed")
             return
         end
     end
     V25.placeFullAt = before
-    log("Auto Place: gagal menaruh telur (plot berisi " .. before .. " telur; kalau slot penuh, hatch dulu)")
+    log("Auto Place: failed to place egg (plot holds " .. before .. " eggs; if slots are full, hatch first)")
     V25.logNearbyPrompts("Auto Place")
 end
 local function autoFuseOnce()
@@ -2598,7 +2921,7 @@ local function autoFuseOnce()
     if n > 0 then
         task.wait(0.8)
         for _ = 1, 3 do clickFirstMatching({ "auto select", "select all", "fuse" }); task.wait(0.5) end
-        log("Auto Fuse dijalankan")
+        log("Auto Fuse ran")
     end
 end
 local function autoIndexOnce()
@@ -3025,11 +3348,11 @@ do
                         end
                     end
                 end
-                if not done then warnOnce("sell_none_" .. label, "Auto Sell: tombol tidak ditemukan. Cek Debug."); break end
+                if not done then warnOnce("sell_none_" .. label, "Auto Sell: button not found. Check Debug."); break end
                 task.wait(0.35); clickLabeled({ "confirm" }, {}); task.wait(0.4)
                 if toolAlive(tool) then
                     fails += 1
-                    if fails >= 2 then warnOnce("sell_fail_" .. label, "Auto Sell: item tidak terjual. Dihentikan."); break end
+                    if fails >= 2 then warnOnce("sell_fail_" .. label, "Auto Sell: item was not sold. Stopped."); break end
                 else sold += 1; fails = 0 end
             end
         end
@@ -3038,7 +3361,7 @@ do
     end
     function V25.autoSellOnce()
         ensureBase()
-        if not hasAnyFilter(config.sellFilters) then warnOnce("sell_nofilter", "Auto Sell Egg: pilih rarity dulu."); return end
+        if not hasAnyFilter(config.sellFilters) then warnOnce("sell_nofilter", "Auto Sell Egg: pick a rarity first."); return end
         local list = {}
         for _, t in ipairs(allTools()) do
             if V25.isEggTool(t) then
@@ -3052,7 +3375,7 @@ do
     local favTried = {}
     function V25.autoFavoriteOnce()
         local names = parseNames(config.favNames)
-        if #names == 0 and not hasAnyFilter(config.favFilters) then warnOnce("fav_nocrit", "Auto Favorit: isi kriteria dulu."); return end
+        if #names == 0 and not hasAnyFilter(config.favFilters) then warnOnce("fav_nocrit", "Auto Favorite: set criteria first."); return end
         local done, fails = 0, 0
         for _, t in ipairs(allTools()) do
             if done >= 8 or not uiAlive then break end
@@ -3063,18 +3386,18 @@ do
                     if RL.tryFavorite(t) then done += 1; fails = 0
                     elseif equipHeld(t) then
                         local clicked = clickLabeled(HINTS.favorite, { "unfav", "unlock" })
-                        if not clicked then warnOnce("fav_btn", "Auto Favorit: tombol tidak ditemukan."); break end
+                        if not clicked then warnOnce("fav_btn", "Auto Favorite: button not found."); break end
                         task.wait(0.4)
                         if isFavorited(t, itemText(t)) then done += 1; fails = 0
                         else
                             fails += 1
-                            if fails >= 2 then warnOnce("fav_fail", "Auto Favorit: klik tidak efek. Dihentikan."); break end
+                            if fails >= 2 then warnOnce("fav_fail", "Auto Favorite: click had no effect. Stopped."); break end
                         end
                     end
                 end
             end
         end
-        if done > 0 then log("Auto Favorit: " .. done) end
+        if done > 0 then log("Auto Favorite: " .. done) end
     end
     local function contextText(btn)
         local parts = {}; local cur = btn
@@ -3121,7 +3444,7 @@ do
             if clicked > 0 then backToBase() end
         end
         if clicked > 0 then log("Auto Upgrade " .. def.name .. ": " .. clicked .. "x")
-        else warnOnce("upg_" .. key, "Auto Upgrade " .. def.name .. ": tombol tidak ditemukan.") end
+        else warnOnce("upg_" .. key, "Auto Upgrade " .. def.name .. ": button not found.") end
     end
     function V25.autoUpgTrailOnce() upgradeOnce("upgTrail") end
     function V25.autoUpgTreadmillOnce() upgradeOnce("upgTreadmill") end
@@ -3129,7 +3452,7 @@ do
     function V25.autoPetPlaceOnce()
         ensureBase()
         local names = parseNames(config.petPlaceNames)
-        if #names == 0 and not hasAnyFilter(config.petPlaceFilters) then warnOnce("petplace_nocrit", "Pet Place: isi kriteria dulu."); return end
+        if #names == 0 and not hasAnyFilter(config.petPlaceFilters) then warnOnce("petplace_nocrit", "Pet Place: set criteria first."); return end
         local chosen
         for _, t in ipairs(allTools()) do
             if isPetTool(t) then
@@ -3137,15 +3460,15 @@ do
                 if matchesSpec(t, text, names, config.petPlaceFilters) then chosen = t; break end
             end
         end
-        if not chosen then warnOnce("petplace_none", "Pet Place: tidak ada pet cocok."); return end
+        if not chosen then warnOnce("petplace_none", "Pet Place: no matching pet."); return end
         if not equipHeld(chosen) then return end
         local n = actOnPrompts(HINTS.place)
-        if n > 0 then log("Pet Place: " .. n .. " prompt dipicu") end
+        if n > 0 then log("Pet Place: " .. n .. " prompt(s) triggered") end
     end
     function V25.autoPetSellOnce()
         ensureBase()
         local names = parseNames(config.petSellNames)
-        if #names == 0 and not hasAnyFilter(config.petSellFilters) then warnOnce("petsell_nocrit", "Pet Sell: isi kriteria dulu."); return end
+        if #names == 0 and not hasAnyFilter(config.petSellFilters) then warnOnce("petsell_nocrit", "Pet Sell: set criteria first."); return end
         local list = {}
         for _, t in ipairs(allTools()) do
             if isPetTool(t) then
@@ -3185,13 +3508,13 @@ do
         return hits
     end
     local function eggPredictText()
-        local hrp = getHRP(); if not hrp then return "Karakter belum ada" end
+        local hrp = getHRP(); if not hrp then return "Character not loaded yet" end
         local list = {}
         for _, p in ipairs(collectEggPrompts()) do
             local pos = getPromptPosition(p)
             if pos and not (config.skipOwn and ownedByMe(p)) then table.insert(list, { p = p, pos = pos, d = (pos - hrp.Position).Magnitude }) end
         end
-        if #list == 0 then return "Tidak ada telur terdeteksi" end
+        if #list == 0 then return "No eggs detected" end
         table.sort(list, function(a, b) return a.d < b.d end)
         local filterOn = config.targetMode == "Filter" and hasAnyFilter(config.filters)
         local lines = {}
@@ -3251,13 +3574,13 @@ do
     V25.AUTO_META = {
         hatch = { "Auto Hatch", autoHatchOnce }, place = { "Auto Place", autoPlaceOnce },
         fuse = { "Auto Fuse", autoFuseOnce }, index = { "Auto Claim Index", autoIndexOnce },
-        sell = { "Auto Sell Egg", V25.autoSellOnce }, favorite = { "Auto Favorit", V25.autoFavoriteOnce },
+        sell = { "Auto Sell Egg", V25.autoSellOnce }, favorite = { "Auto Favorite", V25.autoFavoriteOnce },
         upgTrail = { "Upgrade Trail", V25.autoUpgTrailOnce }, upgTreadmill = { "Upgrade Treadmill", V25.autoUpgTreadmillOnce },
-        upgBase = { "Upgrade Base", V25.autoUpgBaseOnce }, petPlace = { "Pet: Taruh", V25.autoPetPlaceOnce },
-        petSell = { "Pet: Jual", V25.autoPetSellOnce },
+        upgBase = { "Upgrade Base", V25.autoUpgBaseOnce }, petPlace = { "Pet: Place", V25.autoPetPlaceOnce },
+        petSell = { "Pet: Sell", V25.autoPetSellOnce },
     }
     V25.AUTO_ORDER = { "hatch", "place", "fuse", "index", "sell", "favorite", "upgTrail", "upgTreadmill", "upgBase", "petPlace", "petSell" }
-    V25.PRIORITY_OPTIONS = { { id = "none", label = "- Kosong -" }, { id = "event", label = "Event (yang aktif)" } }
+    V25.PRIORITY_OPTIONS = { { id = "none", label = "- None -" }, { id = "event", label = "Event (active ones)" } }
     for _, key in ipairs(V25.AUTO_ORDER) do table.insert(V25.PRIORITY_OPTIONS, { id = key, label = V25.AUTO_META[key][1] }) end
     local valid = { none = true, event = true }; for k in pairs(V25.AUTO_META) do valid[k] = true end
     local fixed = { "steal" }
@@ -3458,7 +3781,7 @@ local function tryOpenShopGui(def)
                     task.wait(0.2)
                     if shopIsOpen(def) then return true end
                     local w = V25.newWindowSince(before)
-                    if w then log("Jendela terbuka: " .. w:GetFullName()); return true end
+                    if w then log("Window opened: " .. w:GetFullName()); return true end
                 end
             end
         end
@@ -3505,19 +3828,19 @@ end
 
 local shopBusy = false
 local function openShop(def)
-    if shopBusy then log("Shop masih diproses, tunggu sebentar"); return end
+    if shopBusy then log("Shop is still being processed, wait a moment"); return end
     shopBusy = true
     task.spawn(function()
         local ok, err = pcall(function()
             Lock.run(function()
-                if tryOpenShopGui(def) then log("Membuka " .. def.name); return end
+                if tryOpenShopGui(def) then log("Opening " .. def.name); return end
                 local hrp = getHRP(); if not hrp then return end
                 local best = V25.findShopWorldTarget(def, hrp)
                 if not best then
-                    log(def.name .. ": tombol HUD & objek dunia tidak ditemukan. Pakai 'Scan Shop GUI' di tab Debug.")
+                    log(def.name .. ": HUD button & world object not found. Use 'Scan Shop GUI' in the DEBUG tab.")
                     return
                 end
-                log("Menuju " .. def.name)
+                log("Heading to " .. def.name)
                 local before = V25.bigVisible()
                 goTo(hrp, best.pos + Vector3.new(0, 3, 3), function() return uiAlive end)
                 task.wait(0.4)
@@ -3533,18 +3856,18 @@ local function openShop(def)
                         end
                     end
                 end
-                if not pr then log("Sudah di lokasi " .. def.name .. " tapi tidak ada prompt untuk ditekan."); return end
+                if not pr then log("Already at " .. def.name .. " but there is no prompt to press."); return end
                 for attempt = 1, 2 do
                     triggerPrompt(pr)
                     local t0 = os.clock()
                     while os.clock() - t0 < 3 do
                         task.wait(0.2)
-                        if shopIsOpen(def) then log(def.name .. " terbuka"); return end
+                        if shopIsOpen(def) then log(def.name .. " opened"); return end
                         local w = V25.newWindowSince(before)
-                        if w then log("Jendela terbuka: " .. w:GetFullName()); return end
+                        if w then log("Window opened: " .. w:GetFullName()); return end
                     end
                 end
-                log(def.name .. ": prompt sudah ditekan tapi UI tidak muncul. Coba 'Scan Shop GUI' & 'Scan Prompt sekitar' (tab Debug).")
+                log(def.name .. ": prompt pressed but no UI appeared. Try 'Scan Shop GUI' & 'Scan Nearby Prompts' (DEBUG tab).")
             end)
         end)
         if not ok then log("Shop error: " .. tostring(err)) end
@@ -3565,7 +3888,7 @@ function ensureBrain()
     if brainRunning or not brainWanted() then return end
     brainRunning = true
     task.spawn(function()
-        log("AFK manager berjalan")
+        log("AFK manager running")
         local aliveSteal = function() return config.running and uiAlive end
         local aliveEvents = function() return anyEventEnabled() and uiAlive end
         while brainWanted() do
@@ -3597,7 +3920,7 @@ function ensureBrain()
                         if res ~= "none" then did = true; return end
                     end
                 end
-                if config.treadmillIdle then Treadmill.run(4)
+                if config.treadmillIdle and not V40.holdingArea() then Treadmill.run(4)
                 else task.wait(2.5) end
             end)
             if not ok then releaseAnchor(); log("Error: " .. tostring(err)); task.wait(1) end
@@ -3605,7 +3928,7 @@ function ensureBrain()
         end
         brainRunning = false
         setStatus("Idle", THEME.sub)
-        log("AFK manager berhenti")
+        log("AFK manager stopped")
     end)
 end
 
@@ -3663,7 +3986,7 @@ local function removePlots()
             else skipped += 1 end
         end
     end
-    log(("Plot dihapus: %d (dilewati: %d)"):format(removed, skipped))
+    log(("Plots removed: %d (skipped: %d)"):format(removed, skipped))
 end
 local function setPlotWatcher(state)
     if plotWatcher then plotWatcher:Disconnect(); plotWatcher = nil end
@@ -3698,7 +4021,7 @@ local function superFpsBoost()
     end)
     plotKeepMine = true
     removePlots(); setPlotWatcher(true); setAntiLag(true)
-    log("Super FPS Boost aktif")
+    log("Super FPS Boost active")
 end
 
 do
@@ -4588,9 +4911,14 @@ local function buildUI()
     local vp = camera and camera.ViewportSize or Vector2.new(900, 600)
     local W = math.max(260, math.min(config.winW, vp.X - 16))
     local H = math.max(200, math.min(config.winH, vp.Y - 16))
-    local SIDE = 58
+    local SIDE = 56
     local FONT_B, FONT_M, FONT_R = Enum.Font.GothamBold, Enum.Font.GothamMedium, Enum.Font.Gotham
     local WHITE = Color3.new(1, 1, 1)
+    -- Minimal palette: near-black panel + a single purple accent
+    local PANEL = Color3.fromRGB(12, 10, 17)
+    local CARD = Color3.fromRGB(23, 20, 31)
+    local HEAD = Color3.fromRGB(32, 28, 45)
+    local OFFC = Color3.fromRGB(52, 46, 70)
     local orderCounter = 0
 
     local function new(class, props, parent)
@@ -4635,75 +4963,48 @@ local function buildUI()
     })
     sg.Parent = playerGui
 
+    -- ===== WINDOW =====
     local win = new("Frame", {
         Name = "Window", Size = UDim2.fromOffset(W, H),
         Position = UDim2.new(0.5, -W / 2, 0.5, -H / 2),
-        BackgroundColor3 = Color3.fromRGB(14, 6, 28), BackgroundTransparency = 1,
-        BorderSizePixel = 0, ClipsDescendants = true,
+        BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true,
     }, sg)
-    corner(win, 12)
-    local winStroke = new("UIStroke", { Color = WHITE, Thickness = 1.5, Transparency = 0.25 }, win)
-    winStroke.Color = THEME.accent2
-    winStroke.Thickness = 1
-    winStroke.Transparency = 0.35
-
-
-    -- Background: satu lapis ungu transparan (polos)
-    local bh = { rings = {}, stars = nil, core = nil, coreStroke = nil }
+    corner(win, 10)
+    new("UIStroke", { Color = THEME.accent, Thickness = 1, Transparency = 0.55 }, win)
+    -- "GlassBG" name is kept so a re-run can still find and remove an old window
     local bgRoot = new("Frame", {
         Name = "GlassBG", Size = UDim2.new(1, 0, 1, 0),
-        BackgroundColor3 = Color3.fromRGB(88, 34, 160), BackgroundTransparency = 0.4,
-        BorderSizePixel = 0, ClipsDescendants = true, ZIndex = -5,
+        BackgroundColor3 = PANEL, BackgroundTransparency = 0.02,
+        BorderSizePixel = 0, ZIndex = -5,
     }, win)
-    corner(bgRoot, 12)
+    corner(bgRoot, 10)
 
     local header = new("Frame", { Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1 }, win)
-    local titleLbl = new("TextLabel", {
-        Size = UDim2.new(1, -86, 1, -4), Position = UDim2.new(0, 12, 0, 0),
-        BackgroundTransparency = 1, Text = "Vura",
-        TextColor3 = WHITE, TextScaled = true, Font = FONT_B,
-        TextXAlignment = Enum.TextXAlignment.Left,
+    new("TextLabel", {
+        Size = UDim2.new(1, -86, 1, 0), Position = UDim2.new(0, 12, 0, 0),
+        BackgroundTransparency = 1, Text = "Vura", TextColor3 = WHITE,
+        TextSize = 12, Font = FONT_B, TextXAlignment = Enum.TextXAlignment.Left,
     }, header)
-    new("UITextSizeConstraint", { MaxTextSize = 12, MinTextSize = 7 }, titleLbl)
-    new("UIGradient", {
-        Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
-            ColorSequenceKeypoint.new(0.55, THEME.accent2),
-            ColorSequenceKeypoint.new(1, THEME.accent),
-        }),
-    }, titleLbl)
-    local divider = new("Frame", {
+    new("Frame", {
         Size = UDim2.new(1, -24, 0, 1), Position = UDim2.new(0, 12, 0, 26),
-        BackgroundColor3 = WHITE, BackgroundTransparency = 0.35, BorderSizePixel = 0,
+        BackgroundColor3 = HEAD, BorderSizePixel = 0,
     }, win)
-    corner(divider, 2)
-    new("UIGradient", {
-        Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, Color3.fromRGB(60, 16, 120)),
-            ColorSequenceKeypoint.new(0.5, THEME.accent),
-            ColorSequenceKeypoint.new(1, Color3.fromRGB(60, 16, 120)),
-        }),
-    }, divider)
 
     local minBtn = new("TextButton", {
         Size = UDim2.fromOffset(16, 16), Position = UDim2.new(1, -40, 0.5, -8),
-        BackgroundColor3 = THEME.off, BackgroundTransparency = 0.3, Text = "-",
-        TextColor3 = WHITE, TextSize = 12, Font = FONT_B,
+        BackgroundColor3 = HEAD, Text = "-", TextColor3 = WHITE, TextSize = 12, Font = FONT_B,
     }, header)
     corner(minBtn, 5)
-    new("UIStroke", { Color = THEME.accent2, Thickness = 1, Transparency = 0.4, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, minBtn)
     local closeBtn = new("TextButton", {
         Size = UDim2.fromOffset(16, 16), Position = UDim2.new(1, -20, 0.5, -8),
-        BackgroundColor3 = THEME.bad, BackgroundTransparency = 0.2, Text = "X",
-        TextColor3 = WHITE, TextSize = 9, Font = FONT_B,
+        BackgroundColor3 = HEAD, Text = "X", TextColor3 = THEME.sub, TextSize = 9, Font = FONT_B,
     }, header)
     corner(closeBtn, 5)
-    new("UIStroke", { Color = THEME.accent2, Thickness = 1, Transparency = 0.4, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, closeBtn)
 
-    -- Tombol Discord (kiri tombol minimize): klik -> langsung buka invite Discord
+    -- Discord button (left of minimize): tap = open the invite
     do
         local DISCORD_INVITE = "https://discord.gg/jyfHZfdYRZ"
-        local DISCORD_LOGO_ASSET = "" -- opsional: isi "rbxassetid://ANGKA" kalau logo Discord sudah diupload ke Roblox
+        local DISCORD_LOGO_ASSET = "" -- optional: "rbxassetid://NUMBER" if the Discord logo is uploaded to Roblox
         local BLURPLE = Color3.fromRGB(88, 101, 242)
         local dcBtn = new("TextButton", {
             Size = UDim2.fromOffset(16, 16), Position = UDim2.new(1, -60, 0.5, -8),
@@ -4711,14 +5012,12 @@ local function buildUI()
             AutoButtonColor = true, ZIndex = 3,
         }, header)
         corner(dcBtn, 5)
-        new("UIStroke", { Color = THEME.accent2, Thickness = 1, Transparency = 0.4, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, dcBtn)
         if DISCORD_LOGO_ASSET ~= "" then
             new("ImageLabel", {
                 Size = UDim2.new(1, -4, 1, -4), Position = UDim2.fromOffset(2, 2),
                 BackgroundTransparency = 1, Image = DISCORD_LOGO_ASSET, ZIndex = 4,
             }, dcBtn)
         else
-            -- logo Discord sederhana dari bentuk UI: wajah putih + dua mata
             local face = new("Frame", {
                 Size = UDim2.fromOffset(10, 7), Position = UDim2.fromOffset(3, 4),
                 BackgroundColor3 = WHITE, BorderSizePixel = 0, ZIndex = 4,
@@ -4740,7 +5039,7 @@ local function buildUI()
                 local opened = false
                 local code = DISCORD_INVITE:match("discord%.gg/([%w%-]+)")
                 if httpRequest and code then
-                    -- minta aplikasi Discord di perangkat membuka invite (jalan kalau Discord app terpasang & terbuka)
+                    -- ask the Discord desktop app to open the invite (works when the app is installed and running)
                     local ok, res = pcall(httpRequest, {
                         Url = "http://127.0.0.1:6463/rpc?v=1", Method = "POST",
                         Headers = { ["Content-Type"] = "application/json", ["Origin"] = "https://discord.com" },
@@ -4750,11 +5049,11 @@ local function buildUI()
                     opened = status ~= nil and status >= 200 and status < 300
                 end
                 if opened then
-                    log("Membuka Discord Vura...")
+                    log("Opening Vura Discord...")
                 else
                     local copied = false
                     if typeof(setclipboard) == "function" then copied = pcall(setclipboard, DISCORD_INVITE) end
-                    log(copied and ("Link Discord disalin, paste di browser: " .. DISCORD_INVITE) or ("Link Discord: " .. DISCORD_INVITE))
+                    log(copied and ("Discord link copied, paste it in your browser: " .. DISCORD_INVITE) or ("Discord link: " .. DISCORD_INVITE))
                 end
                 task.wait(1.5); opening = false
             end)
@@ -4762,16 +5061,17 @@ local function buildUI()
     end
     makeDraggable(header, win)
 
+    -- ===== RESIZE GRIP =====
     local MIN_W, MIN_H = 260, 200
     local grip = new("TextButton", {
         Name = "ResizeGrip", Size = UDim2.fromOffset(30, 30),
         Position = UDim2.new(1, -30, 1, -30), BackgroundTransparency = 1,
         Text = "", AutoButtonColor = false, ZIndex = 30,
     }, win)
-    for _, p in ipairs({ { 21, 21 }, { 14, 21 }, { 21, 14 }, { 7, 21 }, { 14, 14 }, { 21, 7 } }) do
+    for _, p in ipairs({ { 21, 21 }, { 14, 21 }, { 21, 14 } }) do
         local dot = new("Frame", {
             Size = UDim2.fromOffset(3, 3), Position = UDim2.fromOffset(p[1], p[2]),
-            BackgroundColor3 = THEME.accent2, BackgroundTransparency = 0.2,
+            BackgroundColor3 = THEME.sub, BackgroundTransparency = 0.3,
             BorderSizePixel = 0, ZIndex = 31,
         }, grip)
         corner(dot, 2)
@@ -4801,53 +5101,23 @@ local function buildUI()
         end
     end))
 
-    local icon, iconGrad, iconGlowStroke
-    do
-        local DARK = Color3.fromRGB(6, 3, 14)
-        icon = new("TextButton", {
-            Name = "EXIcon", Size = UDim2.fromOffset(40, 40),
-            Position = UDim2.new(0, 24, 0, 60), BackgroundTransparency = 1,
-            Text = "", AutoButtonColor = false, Visible = false,
-        }, sg)
-        local glow = new("Frame", {
-            Size = UDim2.new(1, 12, 1, 12), Position = UDim2.new(0, -6, 0, -6),
-            BackgroundTransparency = 1, BorderSizePixel = 0,
-        }, icon)
-        new("UICorner", { CornerRadius = UDim.new(0.5, 0) }, glow)
-        iconGlowStroke = new("UIStroke", { Color = THEME.accent, Thickness = 6, Transparency = 0.7,
-            ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, glow)
-        local disk = new("Frame", {
-            Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = DARK,
-            BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 2,
-        }, icon)
-        new("UICorner", { CornerRadius = UDim.new(0.5, 0) }, disk)
-        local st = new("UIStroke", { Color = WHITE, Thickness = 4, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, disk)
-        iconGrad = new("UIGradient", {
-            Color = ColorSequence.new({
-                ColorSequenceKeypoint.new(0, THEME.accent),
-                ColorSequenceKeypoint.new(0.35, Color3.fromRGB(230, 205, 255)),
-                ColorSequenceKeypoint.new(0.65, Color3.fromRGB(60, 16, 120)),
-                ColorSequenceKeypoint.new(1, THEME.accent),
-            }),
-        }, st)
-        local shade = new("Frame", {
-            Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = DARK,
-            BackgroundTransparency = 0.5, BorderSizePixel = 0, ZIndex = 4,
-        }, disk)
-        new("UICorner", { CornerRadius = UDim.new(0.5, 0) }, shade)
-        new("TextLabel", {
-            Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = "V",
-            TextColor3 = WHITE, TextSize = 14, Font = FONT_B,
-            TextStrokeColor3 = THEME.accent, TextStrokeTransparency = 0.3, ZIndex = 5,
-        }, disk)
-    end
+    -- ===== MINIMIZED ICON =====
+    local icon = new("TextButton", {
+        Name = "EXIcon", Size = UDim2.fromOffset(36, 36),
+        Position = UDim2.new(0, 24, 0, 60), BackgroundColor3 = PANEL,
+        Text = "V", TextColor3 = WHITE, TextSize = 14, Font = FONT_B,
+        AutoButtonColor = false, Visible = false,
+    }, sg)
+    new("UICorner", { CornerRadius = UDim.new(0.5, 0) }, icon)
+    new("UIStroke", { Color = THEME.accent, Thickness = 2, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, icon)
     local iconDrag = makeDraggable(icon, icon)
     minBtn.MouseButton1Click:Connect(function() win.Visible = false; icon.Visible = true end)
     icon.MouseButton1Click:Connect(function()
         if iconDrag.moved then return end
         win.Visible = true; icon.Visible = false
     end)
-    -- Konfirmasi tutup: X -> dialog Ya/Batal (anti kepencet, skrip tidak mati tiba-tiba)
+
+    -- ===== CLOSE CONFIRMATION =====
     do
         local confirmFrame
         local function closeConfirm()
@@ -4856,32 +5126,31 @@ local function buildUI()
         closeBtn.MouseButton1Click:Connect(function()
             if confirmFrame then return end
             confirmFrame = new("Frame", {
-                Name = "CloseConfirm", Size = UDim2.new(1, 0, 1, 0), Position = UDim2.new(0, 0, 0, 0),
-                BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.45,
+                Name = "CloseConfirm", Size = UDim2.new(1, 0, 1, 0),
+                BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.5,
                 BorderSizePixel = 0, Active = true, ZIndex = 200,
             }, win)
             local box = new("Frame", {
-                Size = UDim2.fromOffset(220, 104), Position = UDim2.new(0.5, -110, 0.5, -52),
-                BackgroundColor3 = Color3.fromRGB(22, 10, 42), BackgroundTransparency = 0.05,
-                BorderSizePixel = 0, ZIndex = 201,
+                Size = UDim2.fromOffset(210, 96), Position = UDim2.new(0.5, -105, 0.5, -48),
+                BackgroundColor3 = CARD, BorderSizePixel = 0, ZIndex = 201,
             }, confirmFrame)
-            corner(box, 10)
-            new("UIStroke", { Color = THEME.accent2, Thickness = 1.2, Transparency = 0.2 }, box)
+            corner(box, 8)
+            new("UIStroke", { Color = THEME.accent, Thickness = 1, Transparency = 0.5 }, box)
             new("TextLabel", {
-                Size = UDim2.new(1, -20, 0, 52), Position = UDim2.fromOffset(10, 8),
-                BackgroundTransparency = 1, Text = "Apakah anda yakin mau menutup Vura Script?",
+                Size = UDim2.new(1, -20, 0, 44), Position = UDim2.fromOffset(10, 8),
+                BackgroundTransparency = 1, Text = "Close Vura Script?",
                 TextColor3 = WHITE, TextSize = 12, Font = FONT_B, TextWrapped = true, ZIndex = 202,
             }, box)
             local yes = new("TextButton", {
-                Size = UDim2.fromOffset(92, 26), Position = UDim2.new(0, 10, 1, -34),
-                BackgroundColor3 = THEME.bad, Text = "Ya, tutup",
-                TextColor3 = WHITE, TextSize = 12, Font = FONT_B, ZIndex = 202,
+                Size = UDim2.fromOffset(88, 26), Position = UDim2.new(0, 10, 1, -34),
+                BackgroundColor3 = OFFC, Text = "Close",
+                TextColor3 = WHITE, TextSize = 11, Font = FONT_B, ZIndex = 202,
             }, box)
             corner(yes, 6)
             local no = new("TextButton", {
-                Size = UDim2.fromOffset(92, 26), Position = UDim2.new(1, -102, 1, -34),
-                BackgroundColor3 = THEME.accent, Text = "Batal",
-                TextColor3 = WHITE, TextSize = 12, Font = FONT_B, ZIndex = 202,
+                Size = UDim2.fromOffset(88, 26), Position = UDim2.new(1, -98, 1, -34),
+                BackgroundColor3 = THEME.accent, Text = "Cancel",
+                TextColor3 = WHITE, TextSize = 11, Font = FONT_B, ZIndex = 202,
             }, box)
             corner(no, 6)
             yes.MouseButton1Click:Connect(function() closeConfirm(); cleanup() end)
@@ -4889,134 +5158,10 @@ local function buildUI()
         end)
     end
 
-    -- Border FX: petir + batu jatuh (default OFF, toggle di CONFIG)
-    do
-        local rnd = Random.new((os.time() % 100000) + 7)
-        local fxLayer = new("Frame", {
-            Name = "BorderFX", Size = UDim2.new(1, 0, 1, 0),
-            BackgroundTransparency = 1, BorderSizePixel = 0,
-            ClipsDescendants = true, Active = false, ZIndex = 25,
-            Visible = config.fxBorder ~= false,
-        }, win)
-        ui.fxLayer = fxLayer
-        local CORE_COL = Color3.fromRGB(240, 224, 255)
-        local SEGS = 5
-        local EDGES = { 1, 3, 2, 4 }
-        local flashFrame = new("Frame", { Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.fromRGB(230, 205, 255),
-            BackgroundTransparency = 1, BorderSizePixel = 0, Active = false, ZIndex = 24 }, fxLayer)
-        local flashT = 1
-        local bolts = {}
-        for i = 1, #EDGES do
-            local b = { edge = EDGES[i], segs = {}, active = false, nextT = os.clock() + rnd:NextNumber(0.2, 1.5), endT = 0 }
-            for s = 1, SEGS + 1 do
-                local glow = new("Frame", {
-                    AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = THEME.accent,
-                    BackgroundTransparency = 0.5, BorderSizePixel = 0,
-                    Size = UDim2.fromOffset(2, 10), Visible = false, ZIndex = 26,
-                }, fxLayer)
-                local core2 = new("Frame", {
-                    AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = CORE_COL,
-                    BorderSizePixel = 0, Size = UDim2.fromOffset(2, 4), Visible = false, ZIndex = 27,
-                }, fxLayer)
-                b.segs[s] = { glow = glow, core = core2 }
-            end
-            bolts[i] = b
-        end
-        local function setSeg(q, x1, y1, x2, y2)
-            local dx, dy = x2 - x1, y2 - y1
-            local len = math.sqrt(dx * dx + dy * dy) + 2
-            local rot = math.deg(math.atan2(dy, dx))
-            local pos = UDim2.fromOffset((x1 + x2) / 2, (y1 + y2) / 2)
-            q.glow.Position = pos; q.glow.Rotation = rot; q.glow.Size = UDim2.fromOffset(len, 10)
-            q.core.Position = pos; q.core.Rotation = rot; q.core.Size = UDim2.fromOffset(len, 4)
-            q.glow.Visible = true; q.core.Visible = true
-        end
-        local function strike(b)
-            local W_, H_ = win.AbsoluteSize.X, win.AbsoluteSize.Y
-            local e = b.edge
-            local length = (e <= 2) and W_ or H_
-            local span = length * rnd:NextNumber(0.22, 0.4)
-            local start = rnd:NextNumber(0, math.max(1, length - span))
-            local pts = {}
-            for i = 0, SEGS do
-                local along = start + span * i / SEGS
-                local perp = (i == 0 or i == SEGS) and 2 or rnd:NextNumber(3, 13)
-                local x, y
-                if e == 1 then x, y = along, perp
-                elseif e == 2 then x, y = along, H_ - perp
-                elseif e == 3 then x, y = perp, along
-                else x, y = W_ - perp, along end
-                pts[i] = Vector2.new(x, y)
-            end
-            for i = 1, SEGS do setSeg(b.segs[i], pts[i - 1].X, pts[i - 1].Y, pts[i].X, pts[i].Y) end
-            local o = pts[2]
-            local inx, iny = 0, 0
-            if e == 1 then iny = 1 elseif e == 2 then iny = -1 elseif e == 3 then inx = 1 else inx = -1 end
-            local blen = rnd:NextNumber(10, 20); local lat = rnd:NextNumber(-8, 8)
-            local tx = o.X + inx * blen + ((e <= 2) and lat or 0)
-            local ty = o.Y + iny * blen + ((e > 2) and lat or 0)
-            setSeg(b.segs[SEGS + 1], o.X, o.Y, tx, ty)
-            flashT = 0.9
-        end
-        local rocks = {}
-        for i = 1, 10 do
-            local size = rnd:NextInteger(9, 17)
-            local f = new("Frame", {
-                Size = UDim2.fromOffset(size, size), AnchorPoint = Vector2.new(0.5, 0.5),
-                BackgroundColor3 = Color3.fromRGB(22, 9, 42), BorderSizePixel = 0, ZIndex = 26,
-            }, fxLayer)
-            new("UICorner", { CornerRadius = UDim.new(0.35, 0) }, f)
-            new("UIStroke", { Color = THEME.accent2, Thickness = 2, Transparency = 0.2,
-                ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, f)
-            rocks[i] = {
-                f = f, side = (i % 2 == 0) and 1 or 2,
-                y = rnd:NextNumber(-20, 300), vy = rnd:NextNumber(70, 150),
-                rot = rnd:NextNumber(0, 360), vr = rnd:NextNumber(-180, 180),
-                off = rnd:NextNumber(7, 14),
-            }
-        end
-        local acc = 0
-        track(RunService.Heartbeat:Connect(function(dt)
-            if not uiAlive or not win.Visible then return end
-            if not fxLayer.Visible then return end
-            acc += dt
-            if acc < 0.04 then return end
-            local step = math.min(acc, 0.1); acc = 0
-            local now = os.clock()
-            local W_, H_ = win.AbsoluteSize.X, win.AbsoluteSize.Y
-            if flashT < 1 then flashT = math.min(1, flashT + step * 1.6); flashFrame.BackgroundTransparency = flashT end
-            for _, b in ipairs(bolts) do
-                if b.active then
-                    if now >= b.endT then
-                        b.active = false
-                        for _, q in ipairs(b.segs) do q.glow.Visible = false; q.core.Visible = false end
-                        b.nextT = now + rnd:NextNumber(0.25, 1.3)
-                    else
-                        local tr = rnd:NextNumber(0.3, 0.7)
-                        for _, q in ipairs(b.segs) do q.glow.BackgroundTransparency = tr end
-                    end
-                elseif now >= b.nextT then
-                    b.active = true
-                    b.endT = now + rnd:NextNumber(0.1, 0.24)
-                    strike(b)
-                end
-            end
-            for _, r in ipairs(rocks) do
-                r.y += r.vy * step; r.rot += r.vr * step
-                if r.y > H_ + 12 then
-                    r.y = -12 - rnd:NextNumber(0, 60)
-                    r.vy = rnd:NextNumber(70, 150); r.off = rnd:NextNumber(7, 14)
-                end
-                local x = (r.side == 1) and r.off or (W_ - r.off)
-                r.f.Position = UDim2.fromOffset(x, r.y)
-                r.f.Rotation = r.rot
-            end
-        end))
-    end
-
+    -- ===== SIDEBAR + CONTENT =====
     local side = new("ScrollingFrame", {
         Size = UDim2.new(0, SIDE, 1, -34), Position = UDim2.new(0, 5, 0, 30),
-        BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 2,
+        BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 0,
         CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
     }, win)
     new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }, side)
@@ -5030,87 +5175,40 @@ local function buildUI()
         for _, o in ipairs(tabs) do
             local on = (o == t)
             o.page.Visible = on
-            o.btn.BackgroundColor3 = on and THEME.accent or THEME.card
-            o.btn.BackgroundTransparency = on and 0.25 or 0.55
+            o.btn.BackgroundTransparency = on and 0 or 1
             o.btn.TextColor3 = on and WHITE or THEME.sub
-            if o.stroke then o.stroke.Color = on and THEME.accent2 or THEME.off end
-            if o.paintIcon then o.paintIcon(on and WHITE or THEME.sub) end
+            o.bar.Visible = on
         end
-    end
-    local function buildTabIcon(parent, kind)
-        local box = new("Frame", {
-            Size = UDim2.fromOffset(20, 20), Position = UDim2.new(0, 3, 0.5, -10), Rotation = 0,
-            BackgroundTransparency = 1,
-        }, parent)
-        new("UIScale", { Scale = 0.8 }, box)
-        local parts = {}
-        local function shape(x, y, w, h, o)
-            o = o or {}
-            local f = new("Frame", {
-                Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h),
-                BackgroundColor3 = THEME.sub, BackgroundTransparency = o.outline and 1 or 0,
-                BorderSizePixel = 0, Rotation = o.rot or 0,
-            }, box)
-            if o.round == "full" then new("UICorner", { CornerRadius = UDim.new(0.5, 0) }, f)
-            elseif o.round then new("UICorner", { CornerRadius = UDim.new(0, o.round) }, f) end
-            if o.outline then
-                local st = new("UIStroke", { Color = THEME.sub, Thickness = 2, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, f)
-                table.insert(parts, { st, "Color" })
-            else table.insert(parts, { f, "BackgroundColor3" }) end
-        end
-        if kind == "MAIN" then
-            shape(4, 2, 12, 16, { outline = true, round = "full" }); shape(8, 9, 4, 4, { round = "full" })
-        elseif kind == "PRIORITY" then
-            shape(3, 4, 14, 3, { round = 1 }); shape(3, 9, 14, 3, { round = 1 }); shape(3, 14, 9, 3, { round = 1 })
-        elseif kind == "AREA" then
-            shape(4, 1, 12, 12, { outline = true, round = "full" }); shape(8, 5, 4, 4, { round = "full" }); shape(9, 13, 2, 6, { round = 1 })
-        elseif kind == "AUTOMATION" then
-            shape(4, 4, 12, 12, { outline = true, round = "full" }); shape(8, 8, 4, 4, { round = "full" })
-            shape(9, 0, 2, 4); shape(9, 16, 2, 4); shape(0, 9, 4, 2); shape(16, 9, 4, 2)
-        elseif kind == "EVENT" then
-            shape(4, 4, 12, 12, { outline = true }); shape(4, 4, 12, 12, { outline = true, rot = 45 }); shape(8, 8, 4, 4, { round = "full" })
-        elseif kind == "SHOP" then
-            shape(6, 1, 8, 9, { outline = true, round = "full" }); shape(3, 8, 14, 11, { round = 2 })
-        elseif kind == "PROTEKSI" then
-            shape(4, 1, 12, 10, { round = 2 }); shape(5, 6, 10, 10, { rot = 45, round = 1 })
-        elseif kind == "WEBHOOK" then
-            shape(1, 6, 11, 8, { outline = true, round = "full" }); shape(8, 6, 11, 8, { outline = true, round = "full" })
-        elseif kind == "CONFIG" then
-            shape(2, 4, 16, 2, { round = 1 }); shape(2, 9, 16, 2, { round = 1 }); shape(2, 14, 16, 2, { round = 1 })
-            shape(4, 2, 5, 6, { round = "full" }); shape(12, 7, 5, 6, { round = "full" }); shape(6, 12, 5, 6, { round = "full" })
-        else
-            shape(6, 5, 8, 12, { round = "full" }); shape(7, 1, 6, 5, { round = "full" })
-            shape(2, 8, 4, 2); shape(14, 8, 4, 2); shape(2, 13, 4, 2); shape(14, 13, 4, 2)
-        end
-        return function(col) for _, p in ipairs(parts) do p[1][p[2]] = col end end
     end
     local function addTab(name)
         local btn = new("TextButton", {
-            Size = UDim2.new(1, -3, 0, 22), BackgroundColor3 = THEME.card, BackgroundTransparency = 0.55, Text = name,
+            Size = UDim2.new(1, -3, 0, 22), BackgroundColor3 = HEAD, BackgroundTransparency = 1, Text = name,
             TextColor3 = THEME.sub, TextSize = 9, TextScaled = true, Font = FONT_B, AutoButtonColor = false,
         }, side)
-        corner(btn, 7)
-        local tabStroke = new("UIStroke", { Color = THEME.off, Thickness = 1, Transparency = 0.2,
-            ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, btn)
+        corner(btn, 5)
         new("UITextSizeConstraint", { MaxTextSize = 9, MinTextSize = 6 }, btn)
-        new("UIPadding", { PaddingLeft = UDim.new(0, 3), PaddingRight = UDim.new(0, 3) }, btn)
-        local paintIcon = nil
+        new("UIPadding", { PaddingLeft = UDim.new(0, 7), PaddingRight = UDim.new(0, 3) }, btn)
+        local bar = new("Frame", {
+            Size = UDim2.fromOffset(2, 12), Position = UDim2.new(0, 1, 0.5, -6),
+            BackgroundColor3 = THEME.accent, BorderSizePixel = 0, Visible = false,
+        }, btn)
+        corner(bar, 1)
         local page = new("ScrollingFrame", {
             Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
-            ScrollBarThickness = 3, CanvasSize = UDim2.new(),
+            ScrollBarThickness = 2, CanvasSize = UDim2.new(),
             AutomaticCanvasSize = Enum.AutomaticSize.Y, Visible = false,
         }, content)
-        new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }, page)
+        new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, page)
         new("UIPadding", { PaddingRight = UDim.new(0, 6), PaddingBottom = UDim.new(0, 8) }, page)
-        local t = { name = name, btn = btn, page = page, stroke = tabStroke, paintIcon = paintIcon }
+        local t = { name = name, btn = btn, page = page, bar = bar }
         table.insert(tabs, t)
         btn.MouseButton1Click:Connect(function() selectTab(t) end)
         return page
     end
 
+    -- ===== BASIC WIDGETS =====
     local function card(parent, h)
-        local f = new("Frame", { Size = UDim2.new(1, 0, 0, h), BackgroundColor3 = THEME.card,
-            BackgroundTransparency = 0.5, BorderSizePixel = 0 }, parent)
+        local f = new("Frame", { Size = UDim2.new(1, 0, 0, h), BackgroundColor3 = CARD, BorderSizePixel = 0 }, parent)
         corner(f, 6)
         return f
     end
@@ -5121,130 +5219,27 @@ local function buildUI()
             TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = true,
         }, parent)
     end
-    local headerMeta = {}
-    local function section(parent, text)
-        local b = new("TextButton", {
-            Size = UDim2.new(1, 0, 0, 20), BackgroundColor3 = THEME.off, BackgroundTransparency = 0.45,
-            Text = "v  " .. text, TextColor3 = THEME.accent2, TextSize = 10, Font = FONT_B,
-            TextXAlignment = Enum.TextXAlignment.Left, AutoButtonColor = false,
-        }, parent)
-        corner(b, 5)
-        new("UIPadding", { PaddingLeft = UDim.new(0, 8) }, b)
-        headerMeta[b] = { btn = b, text = text }
-        return b
-    end
-    -- kelompokkan isi tiap halaman di bawah judul section; klik judul = lipat/buka
-    local function applyCollapse()
-        for _, t in ipairs(tabs) do
-            local items = {}
-            for _, ch in ipairs(t.page:GetChildren()) do
-                if ch:IsA("GuiObject") then table.insert(items, ch) end
-            end
-            table.sort(items, function(a, b) return a.LayoutOrder < b.LayoutOrder end)
-            local groups, cur = {}, nil
-            for _, it in ipairs(items) do
-                local meta = headerMeta[it]
-                if meta then
-                    cur = { meta = meta, members = {} }
-                    table.insert(groups, cur)
-                elseif cur then
-                    table.insert(cur.members, it)
-                end
-            end
-            for gi, g in ipairs(groups) do
-                g.open = (t.name ~= "MAIN") or gi <= 2
-                local function paint()
-                    g.meta.btn.Text = (g.open and "v  " or ">  ") .. g.meta.text
-                    for _, m in ipairs(g.members) do m.Visible = g.open end
-                end
-                paint()
-                g.meta.btn.MouseButton1Click:Connect(function() g.open = not g.open; paint() end)
-            end
-        end
-    end
     local function note(parent, text)
-        local l = label(parent, text, 10, THEME.sub)
+        local l = label(parent, text, 9, THEME.sub)
         l.Size = UDim2.new(1, 0, 0, 0); l.AutomaticSize = Enum.AutomaticSize.Y; return l
     end
     local function safeCall(cb, ...)
         local ok, err = pcall(cb, ...)
-        if not ok then log("Error UI: " .. tostring(err)) end
+        if not ok then log("UI error: " .. tostring(err)) end
     end
     local function buttonRow(parent, text, cb, color)
         local b = new("TextButton", {
-            Size = UDim2.new(1, 0, 0, 24), BackgroundColor3 = color or THEME.accent,
-            BackgroundTransparency = 0.25, Text = text, TextColor3 = WHITE,
-            TextSize = 10, Font = FONT_B, AutoButtonColor = true,
+            Size = UDim2.new(1, 0, 0, 24), BackgroundColor3 = color or OFFC,
+            Text = text, TextColor3 = WHITE, TextSize = 10, Font = FONT_B, AutoButtonColor = true,
         }, parent)
         corner(b, 6)
         b.MouseButton1Click:Connect(function() safeCall(cb, b) end)
         return b
     end
-    local function toggleRow(parent, text, default, cb, subText, reserve)
-        subText = nil
-        local h = 26
-        local row = card(parent, h)
-        local lblW = 50 + (reserve or 0)
-        local lbl = label(row, text, 10, THEME.text, FONT_M)
-        lbl.Size = UDim2.new(1, -lblW, 0, subText and 16 or h)
-        lbl.Position = UDim2.new(0, 8, 0, subText and 2 or 0)
-        if subText then
-            local sl = label(row, subText, 8, THEME.sub)
-            sl.Size = UDim2.new(1, -lblW, 0, 12); sl.Position = UDim2.new(0, 8, 0, 19)
-            sl.TextWrapped = false; sl.TextTruncate = Enum.TextTruncate.AtEnd
-        end
-        local sw = new("TextButton", {
-            Size = UDim2.fromOffset(30, 16), Position = UDim2.new(1, -38, 0.5, -8),
-            BackgroundColor3 = THEME.off, Text = "", AutoButtonColor = false,
-        }, row)
-        corner(sw, 8)
-        local knob = new("Frame", {
-            Size = UDim2.fromOffset(12, 12), Position = UDim2.new(0, 2, 0.5, -6),
-            BackgroundColor3 = WHITE, BorderSizePixel = 0,
-        }, sw)
-        corner(knob, 6)
-        local isOn = default and true or false
-        local function paint(animate)
-            local kp = isOn and UDim2.new(1, -14, 0.5, -6) or UDim2.new(0, 2, 0.5, -6)
-            local col = isOn and THEME.accent or THEME.off
-            if animate then
-                TweenService:Create(knob, TweenInfo.new(0.15), { Position = kp }):Play()
-                TweenService:Create(sw, TweenInfo.new(0.15), { BackgroundColor3 = col }):Play()
-            else knob.Position = kp; sw.BackgroundColor3 = col end
-        end
-        paint(false)
-        sw.MouseButton1Click:Connect(function()
-            isOn = not isOn; paint(true); safeCall(cb, isOn)
-        end)
-        return { row = row, set = function(v) isOn = v and true or false; paint(false) end, get = function() return isOn end }
-    end
-    local function choiceRow(parent, title, options, current, cb)
-        local row = card(parent, 44)
-        local t = label(row, title, 10, THEME.sub, FONT_M)
-        t.Size = UDim2.new(1, -16, 0, 14); t.Position = UDim2.new(0, 8, 0, 3)
-        local btns = {}; local n = #options
-        local function paint(val)
-            for v, b in pairs(btns) do
-                local on = (v == val)
-                b.BackgroundColor3 = on and THEME.accent or THEME.off
-                b.TextColor3 = on and WHITE or THEME.sub
-            end
-        end
-        for i, opt in ipairs(options) do
-            local b = new("TextButton", {
-                Size = UDim2.new(1 / n, -6, 0, 22), Position = UDim2.new((i - 1) / n, 4, 0, 19),
-                BackgroundColor3 = THEME.off, Text = opt[2], TextColor3 = THEME.sub,
-                TextSize = 10, Font = FONT_B, AutoButtonColor = false,
-            }, row)
-            corner(b, 5); btns[opt[1]] = b
-            b.MouseButton1Click:Connect(function() paint(opt[1]); safeCall(cb, opt[1]) end)
-        end
-        paint(current)
-        return { paint = paint }
-    end
     local function stepperRow(parent, title, value, minV, maxV, step, cb, suffix)
         local row = card(parent, 26)
         local t = label(row, title, 10, THEME.text, FONT_M)
+        t.TextWrapped = false; t.TextTruncate = Enum.TextTruncate.AtEnd
         t.Size = UDim2.new(1, -112, 1, 0); t.Position = UDim2.new(0, 8, 0, 0)
         local val = math.clamp(tonumber(value) or minV, minV, maxV)
         local vl = new("TextLabel", {
@@ -5255,7 +5250,7 @@ local function buildUI()
         local function mk(txt, x, delta)
             local b = new("TextButton", {
                 Size = UDim2.fromOffset(22, 18), Position = UDim2.new(1, x, 0.5, -9),
-                BackgroundColor3 = THEME.off, Text = txt, TextColor3 = THEME.text,
+                BackgroundColor3 = OFFC, Text = txt, TextColor3 = WHITE,
                 TextSize = 12, Font = FONT_B,
             }, row)
             corner(b, 5)
@@ -5270,7 +5265,7 @@ local function buildUI()
         t.Size = UDim2.new(0, 46, 1, 0); t.Position = UDim2.new(0, 8, 0, 0)
         local box = new("TextBox", {
             Size = UDim2.new(1, -62, 0, 20), Position = UDim2.new(0, 54, 0.5, -10),
-            BackgroundColor3 = THEME.off, TextColor3 = THEME.text,
+            BackgroundColor3 = OFFC, TextColor3 = THEME.text,
             PlaceholderText = placeholder, PlaceholderColor3 = THEME.sub,
             Text = value or "", TextSize = 9, Font = FONT_R, ClearTextOnFocus = false,
             TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
@@ -5281,8 +5276,8 @@ local function buildUI()
     end
     local function textBox(parent, h)
         local sc = new("ScrollingFrame", {
-            Size = UDim2.new(1, 0, 0, h), BackgroundColor3 = THEME.bg2,
-            BackgroundTransparency = 0.06, BorderSizePixel = 0, ScrollBarThickness = 3,
+            Size = UDim2.new(1, 0, 0, h), BackgroundColor3 = PANEL,
+            BorderSizePixel = 0, ScrollBarThickness = 3,
             CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
         }, parent)
         corner(sc, 6)
@@ -5304,7 +5299,7 @@ local function buildUI()
         head = buttonRow(wrap, "v  " .. title, function()
             body.Visible = not body.Visible
             head.Text = (body.Visible and "^  " or "v  ") .. title
-        end, THEME.off)
+        end, CARD)
         head.LayoutOrder = 1
         body.LayoutOrder = 2
         local bl = new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, body)
@@ -5325,12 +5320,12 @@ local function buildUI()
                 for _, opt in ipairs(opts) do
                     local chip = new("TextButton", {
                         Text = opt, TextSize = 10, Font = FONT_M,
-                        BackgroundColor3 = THEME.off, TextColor3 = THEME.sub, AutoButtonColor = false,
+                        BackgroundColor3 = OFFC, TextColor3 = THEME.sub, AutoButtonColor = false,
                     }, grid)
                     corner(chip, 5)
                     local function paint()
                         local on = sets[cat][opt] == true
-                        chip.BackgroundColor3 = on and THEME.accent or THEME.off
+                        chip.BackgroundColor3 = on and THEME.accent or OFFC
                         chip.TextColor3 = on and WHITE or THEME.sub
                         chip.Font = on and FONT_B or FONT_M
                     end
@@ -5342,14 +5337,14 @@ local function buildUI()
                 end
             end
         end
-        local clr = buttonRow(body, "Reset pilihan filter ini", function()
+        local clr = buttonRow(body, "Reset this filter", function()
             for _, cat in ipairs({ "Size", "Rarity", "Variant" }) do table.clear(sets[cat]) end
             for _, p in ipairs(painters) do p() end
-        end, THEME.off)
+        end, HEAD)
         clr.TextSize = 10
         return wrap
     end
-    -- beberapa baris pilihan segmen dalam satu kartu: { {judul, {{nilai, teks}...}, get, set}, ... }
+    -- several segmented rows in one card: { {title, {{value, text}...}, get, set}, ... }
     local function segGroup(parent, rows)
         local c = card(parent, #rows * 24 + 4)
         for ri, row in ipairs(rows) do
@@ -5362,14 +5357,14 @@ local function buildUI()
                 local cur = row[3]()
                 for _, e in ipairs(btns) do
                     local on = (e.val == cur)
-                    e.b.BackgroundColor3 = on and THEME.accent or THEME.off
+                    e.b.BackgroundColor3 = on and THEME.accent or OFFC
                     e.b.TextColor3 = on and WHITE or THEME.sub
                 end
             end
             for i, opt in ipairs(row[2]) do
                 local b = new("TextButton", {
                     Size = UDim2.new(1 / n, -4, 1, 0), Position = UDim2.new((i - 1) / n, 2, 0, 0),
-                    BackgroundColor3 = THEME.off, Text = opt[2], TextColor3 = THEME.sub,
+                    BackgroundColor3 = OFFC, Text = opt[2], TextColor3 = THEME.sub,
                     TextSize = 10, Font = FONT_B, AutoButtonColor = false,
                 }, holder)
                 corner(b, 5)
@@ -5380,31 +5375,7 @@ local function buildUI()
         end
         return c
     end
-    -- chip on/off berdampingan (2 kolom): { {teks, default, cb}, ... }
-    local function chipGrid(parent, items)
-        local rowsN = math.ceil(#items / 2)
-        local c = card(parent, rowsN * 24 + 4)
-        local setters = {}
-        for i, it in ipairs(items) do
-            local col, rw = (i - 1) % 2, math.floor((i - 1) / 2)
-            local b = new("TextButton", {
-                Size = UDim2.new(0.5, -6, 0, 20), Position = UDim2.new(col * 0.5, 4, 0, 2 + rw * 24),
-                BackgroundColor3 = THEME.off, Text = it[1], TextSize = 9, Font = FONT_B,
-                TextColor3 = THEME.sub, AutoButtonColor = false, TextTruncate = Enum.TextTruncate.AtEnd,
-            }, c)
-            corner(b, 5)
-            local on = it[2] and true or false
-            local function paint()
-                b.BackgroundColor3 = on and THEME.accent or THEME.off
-                b.TextColor3 = on and WHITE or THEME.sub
-            end
-            paint()
-            setters[i] = function(v) on = v and true or false; paint() end
-            b.MouseButton1Click:Connect(function() on = not on; paint(); safeCall(it[3], on) end)
-        end
-        return c, setters
-    end
-    -- tombol aksi berdampingan: { {teks, callback, warna?}, ... }
+    -- action buttons side by side: { {text, callback, color?}, ... }
     local function btnGrid(parent, items, cols)
         cols = cols or 2
         local rowsN = math.ceil(#items / cols)
@@ -5413,7 +5384,7 @@ local function buildUI()
             local col, rw = (i - 1) % cols, math.floor((i - 1) / cols)
             local b = new("TextButton", {
                 Size = UDim2.new(1 / cols, -4, 0, 22), Position = UDim2.new(col / cols, 2, 0, rw * 24),
-                BackgroundColor3 = it[3] or THEME.off, BackgroundTransparency = 0.25, Text = it[1],
+                BackgroundColor3 = it[3] or OFFC, Text = it[1],
                 TextColor3 = WHITE, TextSize = 9, Font = FONT_B, AutoButtonColor = true,
                 TextTruncate = Enum.TextTruncate.AtEnd,
             }, c)
@@ -5424,7 +5395,7 @@ local function buildUI()
     end
     local function dropdownRow(parent, title, options, current, cb)
         local wrap = new("Frame", { Size = UDim2.new(1, 0, 0, 0), BackgroundTransparency = 1 }, parent)
-        local wl = new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, wrap)
+        local wl = new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }, wrap)
         fit(wrap, wl)
         local head = card(wrap, 26)
         head.LayoutOrder = 1
@@ -5432,7 +5403,7 @@ local function buildUI()
         t.Size = UDim2.new(0.18, 0, 1, 0); t.Position = UDim2.new(0, 8, 0, 0)
         local btn = new("TextButton", {
             Size = UDim2.new(0.82, -14, 0, 20), Position = UDim2.new(0.18, 2, 0.5, -10),
-            BackgroundColor3 = THEME.off, TextColor3 = THEME.text, TextSize = 10,
+            BackgroundColor3 = OFFC, TextColor3 = THEME.text, TextSize = 10,
             Font = FONT_B, AutoButtonColor = false, TextTruncate = Enum.TextTruncate.AtEnd, Text = "",
         }, head)
         corner(btn, 5)
@@ -5442,11 +5413,11 @@ local function buildUI()
         fit(body, bl)
         local names = {}
         for _, o in ipairs(options) do names[o.id] = o.label end
-        local function show(id) btn.Text = (names[id] or "- Kosong -") .. "  v" end
+        local function show(id) btn.Text = (names[id] or "- None -") .. "  v" end
         show(current)
         for _, o in ipairs(options) do
             local ob = new("TextButton", {
-                Size = UDim2.new(1, 0, 0, 22), BackgroundColor3 = THEME.off,
+                Size = UDim2.new(1, 0, 0, 22), BackgroundColor3 = HEAD,
                 Text = o.label, TextColor3 = THEME.sub, TextSize = 10,
                 Font = FONT_M, AutoButtonColor = true,
             }, body)
@@ -5459,398 +5430,623 @@ local function buildUI()
         return wrap
     end
 
-    -- ===== TAB MAIN =====
-    local pageMain = addTab("MAIN")
-    section(pageMain, "STATUS")
-    local statusCard = card(pageMain, 48)
-    ui.statusDot = new("Frame", {
-        Size = UDim2.fromOffset(8, 8), Position = UDim2.new(0, 8, 0, 6),
-        BackgroundColor3 = THEME.sub, BorderSizePixel = 0,
-    }, statusCard)
-    corner(ui.statusDot, 4)
-    ui.statusText = label(statusCard, "Idle", 11, THEME.text, FONT_B)
-    ui.statusText.Size = UDim2.new(1, -30, 0, 14); ui.statusText.Position = UDim2.new(0, 22, 0, 3)
-    ui.statsText = label(statusCard, "", 10, THEME.sub)
-    ui.statsText.Size = UDim2.new(1, -16, 0, 14); ui.statsText.Position = UDim2.new(0, 8, 0, 18)
-    ui.modeText = label(statusCard, "", 10, THEME.sub)
-    ui.modeText.Size = UDim2.new(1, -16, 0, 14); ui.modeText.Position = UDim2.new(0, 8, 0, 32)
-    ui.modeText.TextTruncate = Enum.TextTruncate.AtEnd
-    ui.modeText.TextWrapped = false
-    section(pageMain, "KONTROL")
-    toggleRow(pageMain, "Auto Steal", false, function(on)
+    -- ===== SWITCH SYSTEM =====
+    -- toggle: one on/off feature.  gate: a master/sub-menu switch that PAUSES every toggle under it
+    -- (turning it off switches them off and remembers which were on; turning it back on restores exactly those).
+    local function mkSwitch(parent)
+        local sw = new("TextButton", {
+            Size = UDim2.fromOffset(30, 16), Position = UDim2.new(1, -38, 0.5, -8),
+            BackgroundColor3 = OFFC, Text = "", AutoButtonColor = false,
+        }, parent)
+        corner(sw, 8)
+        local knob = new("Frame", {
+            Size = UDim2.fromOffset(12, 12), Position = UDim2.new(0, 2, 0.5, -6),
+            BackgroundColor3 = WHITE, BorderSizePixel = 0,
+        }, sw)
+        corner(knob, 6)
+        local function paint(on, animate)
+            local kp = on and UDim2.new(1, -14, 0.5, -6) or UDim2.new(0, 2, 0.5, -6)
+            local col = on and THEME.accent or OFFC
+            if animate then
+                TweenService:Create(knob, TweenInfo.new(0.15), { Position = kp }):Play()
+                TweenService:Create(sw, TweenInfo.new(0.15), { BackgroundColor3 = col }):Play()
+            else knob.Position = kp; sw.BackgroundColor3 = col end
+        end
+        return sw, paint
+    end
+    local function newToggle(default, cb)
+        local t = { on = default and true or false, gates = {} }
+        function t.get() return t.on end
+        function t.bind(paint) t.paintFn = paint end
+        -- programmatic change; fire = also run the feature callback
+        function t.set(v, fire)
+            v = v and true or false
+            local changed = (v ~= t.on)
+            t.on = v
+            if t.paintFn then t.paintFn(v, fire and true or false) end
+            if fire and changed and cb then safeCall(cb, v) end
+        end
+        -- user tap
+        function t.click()
+            local v = not t.on
+            if v then for _, g in ipairs(t.gates) do g.arm() end end
+            t.on = v
+            if t.paintFn then t.paintFn(v, true) end
+            if cb then safeCall(cb, v) end
+        end
+        return t
+    end
+    local function newGate(kidsFn)
+        local g = { armed = true, stash = {}, painters = {} }
+        local function repaint() for _, p in ipairs(g.painters) do p(g.armed) end end
+        function g.get() return g.armed end
+        function g.set(v)
+            v = v and true or false
+            if v == g.armed then return end
+            g.armed = v
+            if not v then
+                g.stash = {}
+                for _, k in ipairs(kidsFn()) do
+                    if k.get() then g.stash[k] = true; k.set(false, true) end
+                end
+            else
+                local st = g.stash; g.stash = {}
+                for k in pairs(st) do
+                    for _, og in ipairs(k.gates) do if og ~= g then og.arm() end end
+                    k.set(true, true)
+                end
+            end
+            repaint()
+        end
+        -- a feature under this gate was switched on by hand: the gate becomes active again
+        function g.arm()
+            if not g.armed then g.armed = true; g.stash = {}; repaint() end
+        end
+        return g
+    end
+    local function gateSwitch(row, gate)
+        local sw, paint = mkSwitch(row)
+        paint(gate.armed, false)
+        table.insert(gate.painters, function(v) paint(v, true) end)
+        sw.MouseButton1Click:Connect(function() gate.set(not gate.armed) end)
+    end
+
+    -- one tab = a page + a master gate over every toggle registered in it
+    local function newTab(name)
+        local page = addTab(name)
+        local ctx = { page = page, kids = {} }
+        ctx.gate = newGate(function() return ctx.kids end)
+        function ctx.add(t)
+            table.insert(ctx.kids, t)
+            table.insert(t.gates, ctx.gate)
+        end
+        return ctx
+    end
+    local function masterRow(ctx, text)
+        local row = card(ctx.page, 30)
+        row.BackgroundColor3 = HEAD
+        local bar = new("Frame", { Size = UDim2.fromOffset(2, 14), Position = UDim2.new(0, 0, 0.5, -7), BackgroundColor3 = THEME.accent, BorderSizePixel = 0 }, row)
+        corner(bar, 1)
+        local lbl = label(row, text, 11, WHITE, FONT_B)
+        lbl.TextWrapped = false; lbl.TextTruncate = Enum.TextTruncate.AtEnd
+        lbl.Size = UDim2.new(1, -52, 1, 0); lbl.Position = UDim2.new(0, 10, 0, 0)
+        return row
+    end
+    -- master switch that pauses/resumes every feature in the tab
+    local function masterGate(ctx, text)
+        local row = masterRow(ctx, text)
+        gateSwitch(row, ctx.gate)
+        return ctx.gate
+    end
+    -- master switch bound to one real feature (or a lock); not part of the gate
+    local function masterToggle(ctx, text, default, cb)
+        local row = masterRow(ctx, text)
+        local sw, paint = mkSwitch(row)
+        local t = newToggle(default, cb)
+        t.bind(paint); paint(t.on, false)
+        sw.MouseButton1Click:Connect(t.click)
+        return t
+    end
+    local function switchRow(parent, text, default, cb, opts)
+        opts = opts or {}
+        local row = card(parent, 26)
+        local lbl = label(row, text, 10, THEME.text, FONT_M)
+        lbl.TextWrapped = false; lbl.TextTruncate = Enum.TextTruncate.AtEnd
+        lbl.Size = UDim2.new(1, -(48 + (opts.reserve or 0)), 1, 0)
+        lbl.Position = UDim2.new(0, 8, 0, 0)
+        local sw, paint = mkSwitch(row)
+        local t = newToggle(default, cb)
+        t.row = row
+        t.bind(paint); paint(t.on, false)
+        sw.MouseButton1Click:Connect(t.click)
+        return t
+    end
+    -- collapsible sub menu. opts.open = start expanded
+    -- opts.mode = "gate"   -> header switch pauses/resumes the switches inside it
+    -- opts.mode = "toggle" -> header switch IS the feature (opts.default, opts.cb)
+    local function subMenu(ctx, title, opts)
+        opts = opts or {}
+        local sm = { kids = {} }
+        local wrap = new("Frame", { Size = UDim2.new(1, 0, 0, 0), BackgroundTransparency = 1 }, ctx.page)
+        local wl = new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }, wrap)
+        fit(wrap, wl)
+        local head = new("Frame", { Size = UDim2.new(1, 0, 0, 24), BackgroundColor3 = HEAD, BorderSizePixel = 0, LayoutOrder = 1 }, wrap)
+        corner(head, 6)
+        local hasSwitch = (opts.mode == "gate" or opts.mode == "toggle")
+        local open = opts.open and true or false
+        local btn = new("TextButton", {
+            Size = UDim2.new(1, hasSwitch and -46 or 0, 1, 0), BackgroundTransparency = 1,
+            Text = "", TextColor3 = THEME.accent2, TextSize = 10, Font = FONT_B,
+            TextXAlignment = Enum.TextXAlignment.Left, AutoButtonColor = false,
+        }, head)
+        new("UIPadding", { PaddingLeft = UDim.new(0, 8) }, btn)
+        local body = new("Frame", { Size = UDim2.new(1, 0, 0, 0), BackgroundTransparency = 1, Visible = open, LayoutOrder = 2 }, wrap)
+        local bl = new("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }, body)
+        fit(body, bl)
+        local function paintHead()
+            btn.Text = (open and "v  " or ">  ") .. title
+            body.Visible = open
+            body.Size = UDim2.new(1, 0, 0, bl.AbsoluteContentSize.Y)
+        end
+        paintHead()
+        btn.MouseButton1Click:Connect(function() open = not open; paintHead() end)
+        sm.body = body
+        if opts.mode == "gate" then
+            sm.gate = newGate(function() return sm.kids end)
+            gateSwitch(head, sm.gate)
+        elseif opts.mode == "toggle" then
+            local sw, paint = mkSwitch(head)
+            sm.toggle = newToggle(opts.default, opts.cb)
+            sm.toggle.bind(paint); paint(sm.toggle.on, false)
+            sw.MouseButton1Click:Connect(sm.toggle.click)
+            ctx.add(sm.toggle)
+        end
+        function sm.add(t)
+            table.insert(sm.kids, t)
+            if sm.gate then table.insert(t.gates, sm.gate) end
+            ctx.add(t)
+            return t
+        end
+        function sm.switch(text, default, cb, o)
+            return sm.add(switchRow(body, text, default, cb, o))
+        end
+        return sm
+    end
+
+    -- ===== TAB: MAIN =====
+    local main = newTab("MAIN")
+    masterToggle(main, "Auto Steal", false, function(on)
         config.running = on
         if on then
             local hrp = getHRP()
             if hrp and not baseCFrame then
                 baseCFrame = hrp.CFrame + Vector3.new(0, 3, 0); Treadmill.reset()
-                log("Auto Steal ON (base = posisimu sekarang)")
-            else log("Auto Steal ON (memakai base tersimpan)") end
+                log("Auto Steal ON (base = your current position)")
+            else log("Auto Steal ON (using saved base)") end
             ensureBrain()
         else log("Auto Steal OFF") end
         refreshStats()
     end)
-    segGroup(pageMain, {
-        { "Target", { { "All", "Semua" }, { "Filter", "Filter" } },
-            function() return config.targetMode end,
-            function(v) config.targetMode = v; refreshStats() end },
-        { "Steal", { { false, "Normal" }, { true, "Instan" } },
-            function() return config.instantSteal end,
-            function(v)
-                config.instantSteal = v
-                log("Steal " .. (v and "Instan" or "Normal") .. ((v and config.legit) and " (diabaikan saat Legit aktif)" or ""))
-            end },
-        { "Gerak", { { "Walk", "Jalan" }, { "Fly", "Terbang" } },
-            function() return config.method end,
-            function(v) config.method = v; refreshStats() end },
-    })
-    chipGrid(pageMain, {
-        { "Treadmill idle", false, function(on) config.treadmillIdle = on; if on then ensureBrain() end end },
-        { "Skip milik sendiri", config.skipOwn, function(on) config.skipOwn = on end },
-        { "Legit (jalan kaki)", config.legit, function(on)
+
+    do -- Status
+        local sm = subMenu(main, "Status", { open = true })
+        local statusCard = card(sm.body, 48)
+        ui.statusDot = new("Frame", {
+            Size = UDim2.fromOffset(8, 8), Position = UDim2.new(0, 8, 0, 6),
+            BackgroundColor3 = THEME.sub, BorderSizePixel = 0,
+        }, statusCard)
+        corner(ui.statusDot, 4)
+        ui.statusText = label(statusCard, "Idle", 11, THEME.text, FONT_B)
+        ui.statusText.Size = UDim2.new(1, -30, 0, 14); ui.statusText.Position = UDim2.new(0, 22, 0, 3)
+        ui.statsText = label(statusCard, "", 10, THEME.sub)
+        ui.statsText.Size = UDim2.new(1, -16, 0, 14); ui.statsText.Position = UDim2.new(0, 8, 0, 18)
+        ui.modeText = label(statusCard, "", 10, THEME.sub)
+        ui.modeText.Size = UDim2.new(1, -16, 0, 14); ui.modeText.Position = UDim2.new(0, 8, 0, 32)
+        ui.modeText.TextTruncate = Enum.TextTruncate.AtEnd
+        ui.modeText.TextWrapped = false
+    end
+
+    do -- Steal
+        local sm = subMenu(main, "Steal", { open = true, mode = "gate" })
+        segGroup(sm.body, {
+            { "Target", { { "All", "All" }, { "Filter", "Filter" } },
+                function() return config.targetMode end,
+                function(v) config.targetMode = v; refreshStats() end },
+            { "Steal", { { false, "Normal" }, { true, "Instant" } },
+                function() return config.instantSteal end,
+                function(v)
+                    config.instantSteal = v
+                    log("Steal " .. (v and "Instant" or "Normal") .. ((v and config.legit) and " (ignored while Legit is on)" or ""))
+                end },
+            { "Move", { { "Walk", "Walk" }, { "Fly", "Fly" } },
+                function() return config.method end,
+                function(v) config.method = v; refreshStats() end },
+        })
+        sm.switch("Treadmill idle", false, function(on) config.treadmillIdle = on; if on then ensureBrain() end end)
+        sm.switch("Skip own eggs", config.skipOwn, function(on) config.skipOwn = on end)
+        sm.switch("Legit (walk only)", config.legit, function(on)
             config.legit = on; log("Legit Steal " .. (on and "ON" or "OFF")); refreshStats()
-        end },
-    })
-    section(pageMain, "POSISI & TERBANG")
-    stepperRow(pageMain, "Kecepatan terbang", config.flySpeed, 30, 400, 10, function(v) config.flySpeed = v end)
-    stepperRow(pageMain, "Tinggi terbang", config.flyHeight, 0, 60, 2, function(v) config.flyHeight = v end)
-    btnGrid(pageMain, {
-        { "Set Base", function()
-            local hrp = getHRP()
-            if hrp then baseCFrame = hrp.CFrame + Vector3.new(0, 3, 0); Safe.cache = nil; Treadmill.reset(); log("Base disimpan") end
-        end },
-        { "Set Titik Aman", function()
-            local hrp = getHRP()
-            if hrp then
-                V25.manualSafe = hrp.Position; Safe.cache = nil
-                log("Titik aman manual disimpan" .. (config.autoSave and " (auto save)" or ". Tekan SAVE CONFIG agar permanen."))
-            end
-        end },
-        { "Titik Aman: Auto", function()
-            V25.manualSafe = nil; Safe.cache = nil; Safe.lastDesc = nil
-            local p = V25.safeBasePos()
-            log("Titik aman otomatis dipakai" .. (p and (" (%.0f, %.0f, %.0f)"):format(p.X, p.Y, p.Z) or ""))
-        end },
-        { "Set Treadmill", function()
-            local ok2, info = Treadmill.setFromPlayer()
-            if ok2 then log("Treadmill dikunci: " .. tostring(info)) else log("Set Treadmill gagal: " .. tostring(info)) end
-        end },
-        { "Treadmill: Auto", function()
-            Treadmill.clearManual(); log("Treadmill kembali ke deteksi otomatis")
-        end },
-    }, 2)
-    section(pageMain, "FILTER & PREDICT")
-    multiSelect(pageMain, "Filter Size / Rarity / Variant", config.filters)
-    chipGrid(pageMain, {
-        { "Egg Predict", false, function(on)
+        end)
+    end
+
+    do -- Flight & Base
+        local sm = subMenu(main, "Flight & Base")
+        stepperRow(sm.body, "Fly speed", config.flySpeed, 30, 400, 10, function(v) config.flySpeed = v end)
+        stepperRow(sm.body, "Fly height", config.flyHeight, 0, 60, 2, function(v) config.flyHeight = v end)
+        btnGrid(sm.body, {
+            { "Set Base", function()
+                local hrp = getHRP()
+                if hrp then baseCFrame = hrp.CFrame + Vector3.new(0, 3, 0); Safe.cache = nil; Treadmill.reset(); log("Base saved") end
+            end },
+            { "Set Safe Spot", function()
+                local hrp = getHRP()
+                if hrp then
+                    V25.manualSafe = hrp.Position; Safe.cache = nil
+                    log("Manual safe spot saved" .. (config.autoSave and " (auto save)" or ". Save the config to keep it."))
+                end
+            end },
+            { "Safe Spot: Auto", function()
+                V25.manualSafe = nil; Safe.cache = nil; Safe.lastDesc = nil
+                local p = V25.safeBasePos()
+                log("Automatic safe spot in use" .. (p and (" (%.0f, %.0f, %.0f)"):format(p.X, p.Y, p.Z) or ""))
+            end },
+            { "Set Treadmill", function()
+                local ok2, info = Treadmill.setFromPlayer()
+                if ok2 then log("Treadmill locked: " .. tostring(info)) else log("Set Treadmill failed: " .. tostring(info)) end
+            end },
+            { "Treadmill: Auto", function()
+                Treadmill.clearManual(); log("Treadmill back to automatic detection")
+            end },
+        }, 2)
+    end
+
+    do -- Filter
+        local sm = subMenu(main, "Egg Filter")
+        multiSelect(sm.body, "Size / Rarity / Variant", config.filters)
+    end
+
+    do -- Egg Predict
+        local sm = subMenu(main, "Egg Predict", { mode = "toggle", default = false, cb = function(on)
             config.eggPredict = on
             if on then V25.startEggPredict()
             elseif ui.predictLabel then ui.predictLabel.Text = "Egg Predict OFF" end
-        end },
-    })
-    local predictCard = new("Frame", {
-        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundColor3 = THEME.card, BackgroundTransparency = 0.5, BorderSizePixel = 0,
-    }, pageMain)
-    corner(predictCard, 6)
-    new("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, predictCard)
-    ui.predictLabel = new("TextLabel", {
-        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundTransparency = 1, Text = "Egg Predict OFF", TextColor3 = THEME.sub,
-        TextSize = 9, Font = Enum.Font.Code, TextWrapped = true,
-        TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
-    }, predictCard)
-    section(pageMain, "SELL & FAVORIT")
-    chipGrid(pageMain, {
-        { "Auto Sell Egg", false, function(on)
+        end })
+        local predictCard = new("Frame", {
+            Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+            BackgroundColor3 = CARD, BorderSizePixel = 0,
+        }, sm.body)
+        corner(predictCard, 6)
+        new("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4), PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, predictCard)
+        ui.predictLabel = new("TextLabel", {
+            Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+            BackgroundTransparency = 1, Text = "Egg Predict OFF", TextColor3 = THEME.sub,
+            TextSize = 9, Font = Enum.Font.Code, TextWrapped = true,
+            TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+        }, predictCard)
+    end
+
+    do -- Auto Sell
+        local sm = subMenu(main, "Auto Sell Egg", { mode = "toggle", default = false, cb = function(on)
             setAuto("sell", on, V25.autoSellOnce); log("Auto Sell Egg " .. (on and "ON" or "OFF"))
-        end },
-        { "Auto Favorit", false, function(on)
-            setAuto("favorite", on, V25.autoFavoriteOnce); log("Auto Favorit " .. (on and "ON" or "OFF"))
-        end },
-    })
-    multiSelect(pageMain, "Rarity yang dijual", config.sellFilters, { "Rarity" })
-    textboxRow(pageMain, "Favorit", config.favNames, "nama item: dragon, phoenix", function(txt)
-        config.favNames = txt
-    end)
-    multiSelect(pageMain, "Filter favorit (Rarity/Variant)", config.favFilters, { "Rarity", "Variant" })
-    section(pageMain, "LOG")
-    local logScroll, logLabel = textBox(pageMain, 100)
-    ui.logScroll, ui.logLabel = logScroll, logLabel
+        end })
+        multiSelect(sm.body, "Rarities to sell", config.sellFilters, { "Rarity" })
+    end
 
-    -- ===== TAB PRIORITY =====
-    local pagePrio = addTab("PRIORITY")
-    note(pagePrio, "Default MATI. Dinyalakan = dikerjakan urut sesuai daftar.")
-    toggleRow(pagePrio, "Aktifkan Priority", false, function(on)
+    do -- Auto Favorite
+        local sm = subMenu(main, "Auto Favorite", { mode = "toggle", default = false, cb = function(on)
+            setAuto("favorite", on, V25.autoFavoriteOnce); log("Auto Favorite " .. (on and "ON" or "OFF"))
+        end })
+        textboxRow(sm.body, "Names", config.favNames, "item names: dragon, phoenix", function(txt) config.favNames = txt end)
+        multiSelect(sm.body, "Favorite filter (Rarity/Variant)", config.favFilters, { "Rarity", "Variant" })
+    end
+
+    do -- Log
+        local sm = subMenu(main, "Log")
+        local logScroll, logLabel = textBox(sm.body, 100)
+        ui.logScroll, ui.logLabel = logScroll, logLabel
+    end
+
+    -- ===== TAB: PRIORITY =====
+    local prio = newTab("PRIORITY")
+    masterToggle(prio, "Priority Mode", false, function(on)
         V25.applyPriorityMode(on); log("Priority " .. (on and "ON" or "OFF"))
-    end, "Mati = tiap fitur jalan sendiri")
-    section(pagePrio, "URUTAN PRIORITAS")
-    local lockCard = card(pagePrio, 24)
-    local lockLbl = label(lockCard, "#1   Steal Egg  (terkunci)", 10, THEME.accent2, FONT_B)
-    lockLbl.Size = UDim2.new(1, -16, 1, 0); lockLbl.Position = UDim2.new(0, 8, 0, 0)
-    for i = 2, 7 do
-        dropdownRow(pagePrio, "#" .. i, V25.PRIORITY_OPTIONS, config.priority[i], function(id) config.priority[i] = id end)
-    end
-
-    -- ===== TAB AREA =====
-    local pageArea = addTab("AREA")
-    note(pageArea, "Kosong = semua area. Titik area terdeteksi otomatis (AUTO); SET hanya koreksi manual.")
-    local areaToggles, areaPins = {}, {}
-    local function updateAreaPins()
-        for nm, pin in pairs(areaPins) do
-            if V40.areaManual[nm] then pin.Text = "SET*"; pin.TextColor3 = THEME.good
-            elseif V40.areaAuto[nm] then pin.Text = "AUTO"; pin.TextColor3 = THEME.good
-            else pin.Text = "SET"; pin.TextColor3 = THEME.sub end
-        end
-    end
-    btnGrid(pageArea, {
-        { "Pilih semua", function()
-            for _, nm in ipairs(AREAS) do config.areas[nm] = true; areaToggles[nm].set(true) end
-            refreshStats()
-        end },
-        { "Kosongkan", function()
-            for _, nm in ipairs(AREAS) do config.areas[nm] = nil; areaToggles[nm].set(false) end
-            refreshStats()
-        end },
-        { "Reset titik", function()
-            for k in pairs(V40.areaManual) do V40.areaManual[k] = nil end
-            V40.refreshAreaCenters(true); updateAreaPins(); log("Titik manual dihapus, memakai titik otomatis")
-        end },
-    }, 3)
-    local areaCard = card(pageArea, math.ceil(#AREAS / 2) * 24 + 4)
-    for i, nm in ipairs(AREAS) do
-        local col, rw = (i - 1) % 2, math.floor((i - 1) / 2)
-        local y = 2 + rw * 24
-        local on = config.areas[nm] == true
-        local chip = new("TextButton", {
-            Size = UDim2.new(0.5, -40, 0, 20), Position = UDim2.new(col * 0.5, 3, 0, y),
-            BackgroundColor3 = THEME.off, Text = nm, TextSize = 9, Font = FONT_B, TextColor3 = THEME.sub,
-            AutoButtonColor = false, TextTruncate = Enum.TextTruncate.AtEnd,
-        }, areaCard)
-        corner(chip, 5)
-        local function paint()
-            chip.BackgroundColor3 = on and THEME.accent or THEME.off
-            chip.TextColor3 = on and WHITE or THEME.sub
-        end
-        paint()
-        areaToggles[nm] = { set = function(v) on = v and true or false; paint() end }
-        chip.MouseButton1Click:Connect(function()
-            on = not on; paint(); config.areas[nm] = on or nil; refreshStats()
-            if on then task.spawn(function() V40.refreshAreaCenters(true); updateAreaPins() end) end
-        end)
-        local pin = new("TextButton", {
-            Size = UDim2.fromOffset(32, 20), Position = UDim2.new(col * 0.5 + 0.5, -35, 0, y),
-            BackgroundColor3 = THEME.off, Text = "SET", TextColor3 = THEME.sub, TextSize = 8, Font = FONT_B,
-        }, areaCard)
-        corner(pin, 5)
-        areaPins[nm] = pin
-        pin.MouseButton1Click:Connect(function()
-            local hrp = getHRP(); if not hrp then return end
-            areaCenters[nm] = hrp.Position; V40.areaManual[nm] = true; updateAreaPins()
-            log("Pusat area " .. nm .. " disimpan manual")
-        end)
-    end
-    updateAreaPins()
-    -- cari titik area otomatis begitu UI jadi, lalu segarkan label tiap beberapa detik
-    task.spawn(function()
-        local round = 0
-        while uiAlive do
-            round += 1
-            pcall(V40.refreshAreaCenters, round <= 8) -- 8 putaran pertama dipaksa (±1 menit), sesudahnya hemat
-            pcall(updateAreaPins)
-            task.wait(6)
-        end
     end)
-
-    -- ===== TAB AUTO =====
-    local pageAuto = addTab("AUTO")
-    note(pageAuto, "Bekerja untuk tombol/prompt di sekitar base (radius " .. BASE_RADIUS .. ").")
-    local function autoChips(defs)
-        local items = {}
-        for _, def in ipairs(defs) do
-            table.insert(items, { def[2], false, function(on)
-                setAuto(def[1], on, def[3]); log(def[4] .. (on and " ON" or " OFF"))
-            end })
-        end
-        return chipGrid(pageAuto, items)
-    end
-    section(pageAuto, "TELUR & INDEX")
-    autoChips({
-        { "hatch", "Hatch", autoHatchOnce, "Auto Hatch" },
-        { "place", "Place", autoPlaceOnce, "Auto Place" },
-        { "fuse", "Fuse", autoFuseOnce, "Auto Fuse" },
-        { "index", "Claim Index", autoIndexOnce, "Auto Claim Index" },
-    })
-    stepperRow(pageAuto, "Jeda antar aksi", config.autoInterval, 2, 60, 1, function(v) config.autoInterval = v end, " dtk")
-    multiSelect(pageAuto, "Filter telur untuk Place", config.placeFilters)
-    section(pageAuto, "UPGRADE")
-    autoChips({
-        { "upgTrail", "Trail", V25.autoUpgTrailOnce, "Auto Upgrade Trail" },
-        { "upgTreadmill", "Treadmill", V25.autoUpgTreadmillOnce, "Auto Upgrade Treadmill" },
-        { "upgBase", "Base", V25.autoUpgBaseOnce, "Auto Upgrade Base" },
-    })
-    section(pageAuto, "PET")
-    autoChips({
-        { "petPlace", "Taruh Pet", V25.autoPetPlaceOnce, "Auto Taruh Pet" },
-        { "petSell", "Jual Pet", V25.autoPetSellOnce, "Auto Jual Pet" },
-    })
-    textboxRow(pageAuto, "Taruh", config.petPlaceNames, "nama pet: dragon, cat", function(txt) config.petPlaceNames = txt end)
-    multiSelect(pageAuto, "Rarity pet yang ditaruh", config.petPlaceFilters, { "Rarity" })
-    textboxRow(pageAuto, "Jual", config.petSellNames, "nama pet: rat, mouse", function(txt) config.petSellNames = txt end)
-    multiSelect(pageAuto, "Rarity pet yang dijual", config.petSellFilters, { "Rarity" })
-
-    -- ===== TAB EVENT =====
-    local pageEvent = addTab("EVENT")
-    note(pageEvent, "Nyalakan event yang mau diikuti. Nama objek harus sesuai EVENT_DEFS.")
-    local EVENT_SHORT = {
-        racing = "Racing", hwdim = "Halloween Gate", hwboss = "Halloween Boss", scramble = "Dr. Scramble",
-        rift = "Rift & Overlord", butterfly = "Butterfly Bloom", admin = "Admin Abuse",
-    }
+    note(prio.page, "ON = tasks run in the order below. OFF = every feature runs on its own.")
     do
-        local items = {}
-        for _, def in ipairs(EVENT_DEFS) do
-            table.insert(items, { EVENT_SHORT[def.id] or def.name, false, function(on)
-                config.events[def.id] = on
-                if on then ensureBrain() end
-                log("Event " .. def.name .. (on and " ON" or " OFF"))
-            end })
+        local sm = subMenu(prio, "Order", { open = true })
+        local lockCard = card(sm.body, 24)
+        local lockLbl = label(lockCard, "#1   Steal Egg  (locked)", 10, THEME.accent2, FONT_B)
+        lockLbl.Size = UDim2.new(1, -16, 1, 0); lockLbl.Position = UDim2.new(0, 8, 0, 0)
+        for i = 2, 7 do
+            dropdownRow(sm.body, "#" .. i, V25.PRIORITY_OPTIONS, config.priority[i], function(id) config.priority[i] = id end)
         end
-        chipGrid(pageEvent, items)
     end
 
-    -- ===== TAB SHOP =====
-    local pageShop = addTab("SHOP")
-    note(pageShop, "Membuka shop via tombol HUD atau terbang ke objeknya. Tombol beli tidak pernah diklik otomatis.")
+    -- ===== TAB: AREA =====
+    local area = newTab("AREA")
+    masterGate(area, "Area Filter")
+    note(area.page, "ON = only the selected areas. OFF = all areas. Area points are detected automatically (AUTO); SET is only a manual fix.")
     do
+        local areaTs, areaPins = {}, {}
+        local function updateAreaPins()
+            for nm, pin in pairs(areaPins) do
+                if V40.areaManual[nm] then pin.Text = "SET*"; pin.TextColor3 = THEME.accent2
+                elseif V40.areaAuto[nm] then pin.Text = "AUTO"; pin.TextColor3 = THEME.accent2
+                else pin.Text = "SET"; pin.TextColor3 = THEME.sub end
+            end
+        end
+        local sm = subMenu(area, "Areas", { open = true })
+        btnGrid(sm.body, {
+            { "Select all", function()
+                area.gate.arm()
+                for _, nm in ipairs(AREAS) do areaTs[nm].set(true, true) end
+                refreshStats()
+            end },
+            { "Clear", function()
+                for _, nm in ipairs(AREAS) do areaTs[nm].set(false, true) end
+                refreshStats()
+            end },
+        }, 2)
+        for _, nm in ipairs(AREAS) do
+            local t = sm.switch(nm, config.areas[nm] == true, function(on)
+                config.areas[nm] = on or nil; refreshStats()
+                if on then task.spawn(function() V40.refreshAreaCenters(true); updateAreaPins() end) end
+            end, { reserve = 40 })
+            areaTs[nm] = t
+            local pin = new("TextButton", {
+                Size = UDim2.fromOffset(32, 18), Position = UDim2.new(1, -76, 0.5, -9),
+                BackgroundColor3 = OFFC, Text = "SET", TextColor3 = THEME.sub, TextSize = 8, Font = FONT_B,
+            }, t.row)
+            corner(pin, 5)
+            areaPins[nm] = pin
+            pin.MouseButton1Click:Connect(function()
+                local hrp = getHRP(); if not hrp then return end
+                areaCenters[nm] = hrp.Position; V40.areaManual[nm] = true; updateAreaPins()
+                log("Area center " .. nm .. " saved manually")
+            end)
+        end
+        local sp = subMenu(area, "Area Points")
+        buttonRow(sp.body, "Reset manual points", function()
+            for k in pairs(V40.areaManual) do V40.areaManual[k] = nil end
+            V40.refreshAreaCenters(true); updateAreaPins(); log("Manual points cleared, using automatic points")
+        end)
+        updateAreaPins()
+        -- find area points automatically once the UI exists, then refresh the labels every few seconds
+        task.spawn(function()
+            local round = 0
+            while uiAlive do
+                round += 1
+                pcall(V40.refreshAreaCenters, round <= 8) -- first 8 rounds forced (about 1 minute), then lighter
+                pcall(updateAreaPins)
+                task.wait(6)
+            end
+        end)
+    end
+
+    -- ===== TAB: AUTO =====
+    local auto = newTab("AUTO")
+    masterGate(auto, "Auto Features")
+    note(auto.page, "Works on buttons/prompts around your base (radius " .. BASE_RADIUS .. ").")
+    local function autoSwitch(sm, key, text, fn, logName)
+        return sm.switch(text, false, function(on)
+            setAuto(key, on, fn); log(logName .. (on and " ON" or " OFF"))
+        end)
+    end
+    do
+        local sm = subMenu(auto, "Eggs & Index", { open = true, mode = "gate" })
+        autoSwitch(sm, "hatch", "Hatch", autoHatchOnce, "Auto Hatch")
+        autoSwitch(sm, "place", "Place", autoPlaceOnce, "Auto Place")
+        autoSwitch(sm, "fuse", "Fuse", autoFuseOnce, "Auto Fuse")
+        autoSwitch(sm, "index", "Claim Index", autoIndexOnce, "Auto Claim Index")
+        stepperRow(sm.body, "Delay between actions", config.autoInterval, 2, 60, 1, function(v) config.autoInterval = v end, " s")
+        multiSelect(sm.body, "Egg filter for Place", config.placeFilters)
+    end
+    do
+        local sm = subMenu(auto, "Upgrades", { mode = "gate" })
+        autoSwitch(sm, "upgTrail", "Trail", V25.autoUpgTrailOnce, "Auto Upgrade Trail")
+        autoSwitch(sm, "upgTreadmill", "Treadmill", V25.autoUpgTreadmillOnce, "Auto Upgrade Treadmill")
+        autoSwitch(sm, "upgBase", "Base", V25.autoUpgBaseOnce, "Auto Upgrade Base")
+    end
+    do
+        local sm = subMenu(auto, "Pets", { mode = "gate" })
+        autoSwitch(sm, "petPlace", "Place Pet", V25.autoPetPlaceOnce, "Auto Place Pet")
+        autoSwitch(sm, "petSell", "Sell Pet", V25.autoPetSellOnce, "Auto Sell Pet")
+        textboxRow(sm.body, "Place", config.petPlaceNames, "pet names: dragon, cat", function(txt) config.petPlaceNames = txt end)
+        multiSelect(sm.body, "Rarity of pets to place", config.petPlaceFilters, { "Rarity" })
+        textboxRow(sm.body, "Sell", config.petSellNames, "pet names: rat, mouse", function(txt) config.petSellNames = txt end)
+        multiSelect(sm.body, "Rarity of pets to sell", config.petSellFilters, { "Rarity" })
+    end
+
+    -- ===== TAB: EVENT =====
+    local event = newTab("EVENT")
+    masterGate(event, "Events")
+    note(event.page, "Turn on the events you want to join.")
+    do
+        local EVENT_SHORT = {
+            racing = "Racing", hwdim = "Halloween Gate", hwboss = "Halloween Boss", scramble = "Dr. Scramble",
+            rift = "Rift & Overlord", butterfly = "Butterfly Bloom", admin = "Admin Abuse",
+        }
+        local defById = {}
+        for _, def in ipairs(EVENT_DEFS) do defById[def.id] = def end
+        local groups = {
+            { "Boss Events", { "scramble", "rift", "admin" } },
+            { "Halloween", { "hwdim", "hwboss" } },
+            { "World Events", { "racing", "butterfly" } },
+        }
+        for _, g in ipairs(groups) do
+            local sm = subMenu(event, g[1], { open = true, mode = "gate" })
+            for _, id in ipairs(g[2]) do
+                local def = defById[id]
+                if def then
+                    sm.switch(EVENT_SHORT[id] or def.name, false, function(on)
+                        config.events[id] = on
+                        if on then ensureBrain() end
+                        log("Event " .. def.name .. (on and " ON" or " OFF"))
+                    end)
+                end
+            end
+        end
+    end
+
+    -- ===== TAB: SHOP =====
+    local shop = newTab("SHOP")
+    local shopFrames = {}
+    local shopOn = true
+    masterToggle(shop, "Shop Access", true, function(on)
+        shopOn = on
+        for _, c in ipairs(shopFrames) do
+            for _, b in ipairs(c:GetChildren()) do
+                if b:IsA("TextButton") then
+                    b.BackgroundTransparency = on and 0 or 0.6
+                    b.TextTransparency = on and 0 or 0.5
+                end
+            end
+        end
+        log("Shop Access " .. (on and "ON" or "OFF (buttons locked)"))
+    end)
+    note(shop.page, "Opens a shop through its HUD button or by flying to it. Buy buttons are never clicked automatically. Switch off to lock these buttons.")
+    do
+        local sm = subMenu(shop, "Shops", { open = true })
         local items = {}
         for _, def in ipairs(SHOPS) do
-            table.insert(items, { def.name, function() openShop(def) end, THEME.accent })
+            table.insert(items, { def.name, function()
+                if not shopOn then log("Shop Access is OFF"); return end
+                openShop(def)
+            end, THEME.accent })
         end
-        btnGrid(pageShop, items, 2)
-    end
-    buttonRow(pageShop, "Tutup semua jendela shop", function()
-        task.spawn(function()
-            local n = V25.closeAllShops()
-            log(n > 0 and ("Menutup " .. n .. " jendela shop") or "Tidak ada jendela shop yang terbuka")
+        table.insert(shopFrames, btnGrid(sm.body, items, 2))
+        local sw = subMenu(shop, "Windows")
+        buttonRow(sw.body, "Close all shop windows", function()
+            task.spawn(function()
+                local n = V25.closeAllShops()
+                log(n > 0 and ("Closed " .. n .. " shop window(s)") or "No shop windows are open")
+            end)
         end)
-    end, THEME.bad)
+    end
 
-    -- ===== TAB PROTEKSI =====
-    local pageProt = addTab("PROTEKSI")
-    section(pageProt, "PROTEKSI")
-    chipGrid(pageProt, {
-        { "Anti Knockback", config.antiKB, function(on) config.antiKB = on; Protect.sync() end },
-        { "Anti Trapped", config.antiTrap, function(on) config.antiTrap = on; Protect.sync() end },
-        { "Anti AFK", config.antiAfk, function(on) config.antiAfk = on; AFK.sync() end },
-        { "Hapus popup +Speed", config.removePopups, function(on) setPopupCleaner(on) end },
-    })
-    section(pageProt, "TAMPILAN & PERFORMA")
+    -- ===== TAB: PROTECT =====
+    local prot = newTab("PROTECT")
+    masterGate(prot, "Protection")
     local pingFrame = new("Frame", {
-        Size = UDim2.fromOffset(160, 22), Position = UDim2.new(1, -170, 0, 6),
-        BackgroundColor3 = THEME.bg2, BackgroundTransparency = 0.08,
+        Size = UDim2.fromOffset(150, 20), Position = UDim2.new(1, -160, 0, 6),
+        BackgroundColor3 = PANEL, BackgroundTransparency = 0.15,
         BorderSizePixel = 0, Visible = config.pingPanel,
     }, sg)
     corner(pingFrame, 6)
     ui.pingLabel = new("TextLabel", {
         Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
-        TextColor3 = THEME.good, TextSize = 11, Font = FONT_B, Text = "PING - | FPS -",
+        TextColor3 = THEME.accent2, TextSize = 10, Font = FONT_B, Text = "PING - | FPS -",
     }, pingFrame)
-    local _, perfSet = chipGrid(pageProt, {
-        { "Panel Ping & FPS", config.pingPanel, function(on) config.pingPanel = on; pingFrame.Visible = on end },
-        { "Anti Lag", config.antiLag, function(on) config.antiLag = on; setAntiLag(on) end },
-        { "Hide All GUI", false, function(on)
+    local antiLagT
+    do
+        local sm = subMenu(prot, "Protection", { open = true, mode = "gate" })
+        sm.switch("Anti Knockback", config.antiKB, function(on) config.antiKB = on; Protect.sync() end)
+        sm.switch("Anti Trapped", config.antiTrap, function(on) config.antiTrap = on; Protect.sync() end)
+        sm.switch("Anti AFK", config.antiAfk, function(on) config.antiAfk = on; AFK.sync() end)
+        sm.switch("Remove +Speed popups", config.removePopups, function(on) setPopupCleaner(on) end)
+    end
+    do
+        local sm = subMenu(prot, "Display & Performance", { mode = "gate" })
+        sm.switch("Ping & FPS panel", config.pingPanel, function(on) config.pingPanel = on; pingFrame.Visible = on end)
+        antiLagT = sm.switch("Anti Lag", config.antiLag, function(on) config.antiLag = on; setAntiLag(on) end)
+        btnGrid(sm.body, {
+            { "Remove other plots", function() plotKeepMine = true; task.spawn(removePlots) end },
+            { "Super FPS Boost", function()
+                task.spawn(function() superFpsBoost(); config.antiLag = true; antiLagT.set(true, false) end)
+            end },
+        }, 2)
+    end
+    do
+        local sm = subMenu(prot, "Power Saver", { mode = "gate" })
+        sm.switch("Hide All GUI", false, function(on)
             V25.setHideAllGui(on); log("Hide All GUI " .. (on and "ON" or "OFF"))
-        end },
-        { "AFK Hemat", false, function(on)
-            V25.setAfkSaver(on); log("Mode AFK Hemat " .. (on and "ON" or "OFF"))
-        end },
-    })
-    local antiLagToggle = { set = perfSet[2] }
-    note(pageProt, "Hide All GUI: matikan dulu bila memakai auto shop/jual. AFK Hemat = batasi FPS + volume 0.")
-    stepperRow(pageProt, "Batas FPS AFK hemat", config.fpsCap, 5, 60, 5, function(v)
-        config.fpsCap = v
-        if config.afkSaver and typeof(setfpscap) == "function" then pcall(setfpscap, v) end
-    end)
-    btnGrid(pageProt, {
-        { "Hapus plot orang lain", function() plotKeepMine = true; task.spawn(removePlots) end },
-        { "Super FPS Boost", function()
-            task.spawn(function() superFpsBoost(); config.antiLag = true; antiLagToggle.set(true) end)
-        end, THEME.warn },
-    }, 2)
+        end)
+        sm.switch("AFK Saver", false, function(on)
+            V25.setAfkSaver(on); log("AFK Saver " .. (on and "ON" or "OFF"))
+        end)
+        stepperRow(sm.body, "AFK FPS cap", config.fpsCap, 5, 60, 5, function(v)
+            config.fpsCap = v
+            if config.afkSaver and typeof(setfpscap) == "function" then pcall(setfpscap, v) end
+        end)
+        note(sm.body, "Turn Hide All GUI off before using auto shop/sell. AFK Saver = FPS cap + volume 0.")
+    end
 
-    -- ===== TAB WEBHOOK =====
-    local pageWh = addTab("WEBHOOK")
-    section(pageWh, "NOTIFIKASI TELUR")
-    toggleRow(pageWh, "Kirim webhook tiap telur", false, function(on)
-        config.eggWebhookOn = on
-        if on and not validWebhook(config.eggWebhookUrl) then log("URL webhook telur belum valid") end
-    end)
-    textboxRow(pageWh, "URL", config.eggWebhookUrl, "https://discord.com/api/webhooks/...", function(txt)
-        config.eggWebhookUrl = (txt:gsub("%s+", ""))
-    end)
-    btnGrid(pageWh, {
-        { "Tes webhook telur", function()
-            if not validWebhook(config.eggWebhookUrl) then log("URL webhook telur belum valid"); return end
-            queueWebhook(config.eggWebhookUrl, embedPayload("Tes webhook", 0x8B5CF6, {
-                { name = "Status", value = "Berhasil terhubung", inline = true },
-                { name = "Pemain", value = player.DisplayName, inline = true },
+    -- ===== TAB: WEBHOOK =====
+    local wh = newTab("WEBHOOK")
+    masterGate(wh, "Webhooks")
+    do
+        local sm = subMenu(wh, "Egg Alerts", { open = true, mode = "toggle", default = false, cb = function(on)
+            config.eggWebhookOn = on
+            if on and not validWebhook(config.eggWebhookUrl) then log("Egg webhook URL is not valid yet") end
+        end })
+        textboxRow(sm.body, "URL", config.eggWebhookUrl, "https://discord.com/api/webhooks/...", function(txt)
+            config.eggWebhookUrl = (txt:gsub("%s+", ""))
+        end)
+        buttonRow(sm.body, "Send test", function()
+            if not validWebhook(config.eggWebhookUrl) then log("Egg webhook URL is not valid yet"); return end
+            queueWebhook(config.eggWebhookUrl, embedPayload("Webhook test", 0x8B5CF6, {
+                { name = "Status", value = "Connected", inline = true },
+                { name = "Player", value = player.DisplayName, inline = true },
             }))
-            log("Tes webhook telur dikirim")
-        end },
-    }, 1)
-    section(pageWh, "LAPORAN AFK")
-    toggleRow(pageWh, "Kirim laporan berkala", false, function(on)
-        config.statsWebhookOn = on
-        if on then
-            if not validWebhook(config.statsWebhookUrl) then log("URL webhook laporan belum valid") end
-            startStatsLoop()
-        end
-    end)
-    textboxRow(pageWh, "URL", config.statsWebhookUrl, "https://discord.com/api/webhooks/...", function(txt)
-        config.statsWebhookUrl = (txt:gsub("%s+", ""))
-    end)
-    stepperRow(pageWh, "Interval laporan", config.statsIntervalMin, 1, 120, 1, function(v) config.statsIntervalMin = v end, " mnt")
-    btnGrid(pageWh, {
-        { "Kirim laporan sekarang", function()
-            if not validWebhook(config.statsWebhookUrl) then log("URL webhook laporan belum valid"); return end
-            sendStatsWebhook(true); log("Laporan dikirim")
-        end },
-    }, 1)
+            log("Egg webhook test sent")
+        end)
+    end
+    do
+        local sm = subMenu(wh, "AFK Report", { open = true, mode = "toggle", default = false, cb = function(on)
+            config.statsWebhookOn = on
+            if on then
+                if not validWebhook(config.statsWebhookUrl) then log("Report webhook URL is not valid yet") end
+                startStatsLoop()
+            end
+        end })
+        textboxRow(sm.body, "URL", config.statsWebhookUrl, "https://discord.com/api/webhooks/...", function(txt)
+            config.statsWebhookUrl = (txt:gsub("%s+", ""))
+        end)
+        stepperRow(sm.body, "Report interval", config.statsIntervalMin, 1, 120, 1, function(v) config.statsIntervalMin = v end, " min")
+        buttonRow(sm.body, "Send report now", function()
+            if not validWebhook(config.statsWebhookUrl) then log("Report webhook URL is not valid yet"); return end
+            sendStatsWebhook(true); log("Report sent")
+        end)
+    end
 
-    -- ===== TAB CONFIG =====
-    local pageCfg = addTab("CONFIG")
-    local _, cfgSet = chipGrid(pageCfg, {
-        { "Auto Save (10 dtk)", config.autoSave, function(on)
-            config.autoSave = on
-            if on then pcall(saveSettings, false) end
-            log("Auto Save " .. (on and "ON" or "OFF"))
-        end },
-        { "Efek Petir & Batu", config.fxBorder ~= false, function(on)
-            config.fxBorder = on
-            if ui.fxLayer then ui.fxLayer.Visible = on end
-        end },
-    })
-    btnGrid(pageCfg, {
-        { "SAVE CONFIG SEKARANG", function(b)
+    -- ===== TAB: CONFIG =====
+    local cfg = newTab("CONFIG")
+    local autoSaveT = masterToggle(cfg, "Auto Save (every 10 s)", config.autoSave, function(on)
+        config.autoSave = on
+        if on then pcall(saveSettings, false) end
+        log("Auto Save " .. (on and "ON" or "OFF"))
+    end)
+    do
+        local sm = subMenu(cfg, "Save", { open = true })
+        buttonRow(sm.body, "Save config now", function(b)
             local ok = saveSettings(true)
-            b.Text = ok and "TERSIMPAN!" or "GAGAL (tidak support writefile)"
-            task.delay(1.5, function() if b.Parent then b.Text = "SAVE CONFIG SEKARANG" end end)
-        end, THEME.accent },
-    }, 1)
-    note(pageCfg, "File config: " .. SAVE_FILE)
-    btnGrid(pageCfg, {
-        { "Hapus file simpanan", function()
-            if typeof(delfile) == "function" and typeof(isfile) == "function" then
-                pcall(function() if isfile(SAVE_FILE) then delfile(SAVE_FILE) end end)
-                lastSavedJson = nil
-                config.autoSave = false; cfgSet[1](false)
-                log("File simpanan dihapus. Auto Save dimatikan.")
-            else log("Executor tidak mendukung delfile") end
-        end, THEME.bad },
-        { "Unload script", function() cleanup() end, THEME.bad },
-    }, 2)
+            b.Text = ok and "Saved!" or "Failed (writefile not supported)"
+            task.delay(1.5, function() if b.Parent then b.Text = "Save config now" end end)
+        end, THEME.accent)
+        note(sm.body, "Config file: " .. SAVE_FILE)
+    end
+    do
+        local sm = subMenu(cfg, "Danger Zone")
+        btnGrid(sm.body, {
+            { "Delete saved file", function()
+                if typeof(delfile) == "function" and typeof(isfile) == "function" then
+                    pcall(function() if isfile(SAVE_FILE) then delfile(SAVE_FILE) end end)
+                    lastSavedJson = nil
+                    config.autoSave = false; autoSaveT.set(false, false)
+                    log("Saved file deleted. Auto Save turned off.")
+                else log("Executor does not support delfile") end
+            end },
+            { "Unload script", function() cleanup() end },
+        }, 2)
+    end
 
-    -- ===== TAB DEBUG =====
-    local pageDbg = addTab("DEBUG")
+    -- ===== TAB: DEBUG =====
+    local dbgTab = newTab("DEBUG")
+    local debugOn = false
+    masterToggle(dbgTab, "Debug Tools", false, function(on)
+        debugOn = on
+    end)
+    note(dbgTab.page, "Switch on to unlock the scan buttons. Output appears in the Output menu.")
     local dbgLines = {}
     local dbgLabel
     local function dbg(text)
@@ -5858,87 +6054,87 @@ local function buildUI()
         if #dbgLines > 1500 then table.remove(dbgLines, 1) end
         if dbgLabel then
             local joined = table.concat(dbgLines, "\n")
-            dbgLabel.Text = #joined > 8000 and ("...(tampilan dipotong, pakai Salin ke clipboard)\n" .. joined:sub(-8000)) or joined
+            dbgLabel.Text = #joined > 8000 and ("...(view truncated, use Copy output)\n" .. joined:sub(-8000)) or joined
         end
     end
     local function scanEggs()
         local hrp = getHRP()
         local list = collectEggPrompts()
-        dbg(("== SCAN TELUR: %d prompt =="):format(#list))
+        dbg(("== EGG SCAN: %d prompts =="):format(#list))
         for i, p in ipairs(list) do
-            if i > 15 then dbg("... dipotong"); break end
+            if i > 15 then dbg("... truncated"); break end
             local pos = getPromptPosition(p)
             local d = (hrp and pos) and math.floor((pos - hrp.Position).Magnitude) or -1
-            dbg(("%s | aksi='%s' | aktif=%s | jarak=%s | milikku=%s"):format(
+            dbg(("%s | action='%s' | enabled=%s | distance=%s | mine=%s"):format(
                 p:GetFullName(), tostring(p.ActionText), tostring(p.Enabled), tostring(d), tostring(ownedByMe(p))))
         end
     end
     local function scanUI()
-        dbg("== SCAN UI ==")
+        dbg("== UI SCAN ==")
         local n = 0
         for _, d in ipairs(playerGui:GetDescendants()) do
             if (d:IsA("TextButton") or d:IsA("ImageButton")) and not d:IsDescendantOf(sg) and guiVisible(d) then
-                n += 1; if n > 60 then dbg("... dipotong"); break end
-                dbg(("%s | teks='%s'"):format(d:GetFullName(), buttonLabel(d)))
+                n += 1; if n > 60 then dbg("... truncated"); break end
+                dbg(("%s | text='%s'"):format(d:GetFullName(), buttonLabel(d)))
             end
         end
     end
     local function scanPrompts()
         local hrp = getHRP()
-        if not hrp then dbg("Karakter belum ada"); return end
-        dbg("== SCAN PROMPT (radius 120) ==")
+        if not hrp then dbg("Character not loaded"); return end
+        dbg("== PROMPT SCAN (radius 120) ==")
         local n = 0
         for _, p in ipairs(Workspace:GetDescendants()) do
             if p:IsA("ProximityPrompt") then
                 local pos = getPromptPosition(p)
                 if pos and (pos - hrp.Position).Magnitude <= 120 then
-                    n += 1; if n > 40 then dbg("... dipotong"); break end
-                    dbg(("%s | aksi='%s' | objek='%s' | aktif=%s"):format(
+                    n += 1; if n > 40 then dbg("... truncated"); break end
+                    dbg(("%s | action='%s' | object='%s' | enabled=%s"):format(
                         p:GetFullName(), tostring(p.ActionText), tostring(p.ObjectText), tostring(p.Enabled)))
                 end
             end
         end
     end
     local function scanRemotes()
-        dbg("== SCAN REMOTE ==")
+        dbg("== REMOTE SCAN ==")
         local n = 0
         for _, d in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
             if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
-                n += 1; if n > 80 then dbg("... dipotong"); break end
+                n += 1; if n > 80 then dbg("... truncated"); break end
                 dbg(d.ClassName .. " | " .. d:GetFullName())
             end
         end
     end
     local function scanStats()
         local s = readStats()
-        dbg("== SCAN STATS ==")
-        dbg(("Speed: %s (sumber: %s)"):format(s.speed, s.speedSrc))
-        dbg(("Uang: %s (sumber: %s)"):format(s.money, s.moneySrc))
+        dbg("== STATS SCAN ==")
+        dbg(("Speed: %s (source: %s)"):format(s.speed, s.speedSrc))
+        dbg(("Money: %s (source: %s)"):format(s.money, s.moneySrc))
         dbg(("Ping: %d ms"):format(currentPing()))
         local tm = findTreadmill()
-        dbg("Treadmill: " .. (tm and (tm:GetFullName() .. " [" .. tostring(Treadmill.how) .. "]") or "tidak ditemukan"))
-        dbg("Base: " .. (baseCFrame and "sudah di-set" or "belum di-set"))
+        dbg("Treadmill: " .. (tm and (tm:GetFullName() .. " [" .. tostring(Treadmill.how) .. "]") or "not found"))
+        dbg("Base: " .. (baseCFrame and "set" or "not set"))
     end
     local function scanShopGui()
-        dbg("== SCAN SHOP GUI ==")
+        dbg("== SHOP GUI SCAN ==")
         for _, def in ipairs(SHOPS) do
             local conts = shopContainers(def)
-            dbg(("[%s] frame cocok: %d | terbuka: %s"):format(def.name, #conts, tostring(shopIsOpen(def))))
+            dbg(("[%s] matching frames: %d | open: %s"):format(def.name, #conts, tostring(shopIsOpen(def))))
             for i, c in ipairs(conts) do
-                if i > 6 then dbg("  ... dipotong"); break end
+                if i > 6 then dbg("  ... truncated"); break end
                 local vis = c:IsA("GuiObject") and ("vis=" .. tostring(c.Visible) .. " size=" .. math.floor(c.AbsoluteSize.X) .. "x" .. math.floor(c.AbsoluteSize.Y)) or ("enabled=" .. tostring(c.Enabled))
                 dbg("  " .. c:GetFullName() .. " | " .. vis)
             end
             for i, b in ipairs(findButtons(def.gui, false)) do
                 if i > 4 then break end
-                dbg("  tombol: " .. b:GetFullName() .. " | '" .. buttonLabel(b) .. "'")
+                dbg("  button: " .. b:GetFullName() .. " | '" .. buttonLabel(b) .. "'")
             end
         end
     end
     local function scanFilterText()
         local hrp = getHRP()
-        if not hrp then dbg("Karakter belum ada"); return end
-        dbg("== SCAN TEKS FILTER (5 telur terdekat) ==")
+        if not hrp then dbg("Character not loaded"); return end
+        dbg("== FILTER TEXT SCAN (5 nearest eggs) ==")
         local list = {}
         for _, p in ipairs(collectEggPrompts()) do
             local pos = getPromptPosition(p)
@@ -5948,77 +6144,88 @@ local function buildUI()
         for i = 1, math.min(5, #list) do
             local root = getEggRoot(list[i].p)
             local text = collectEggText(root)
-            dbg(("#%d %s | lolos filter=%s"):format(i, root:GetFullName(), tostring(passesFilters(root, text, config.filters))))
+            dbg(("#%d %s | passes filter=%s"):format(i, root:GetFullName(), tostring(passesFilters(root, text, config.filters))))
             dbg("   " .. text:sub(1, 300))
         end
-        if #list == 0 then dbg("Tidak ada prompt telur") end
+        if #list == 0 then dbg("No egg prompts") end
     end
+    local ALL_LABEL = "SCAN ALL (one tap)"
     local dbgBtns = {
-        { "Scan Treadmill (pemilik)", function() V25.scanTreadmill(dbg) end },
-        { "Scan Plot / Base", function() V25.scanPlot(dbg) end },
-        { "Scan Lab Dr. Scramble / Experiment", function() V25.scanLab(dbg) end },
-        { "Scan Jendela GUI Terbuka", function() V25.scanWindows(dbg) end },
-        { "Scan Detail Telur (webhook)", function() V25.scanEggDetail(dbg) end },
-        { "UJI REMOTE: sell/favorit/upgrade/claim (SEKALI TEKAN)", function() V25.remoteProbe(dbg) end, skipAll = true },
-        { "Daftar Remote lengkap + kandidat (pasif)", function() V25.remoteProbe(dbg, nil, true) end },
-        { "Scan Remote Penting", function() V25.scanRemotesKey(dbg) end },
-        { "Scan Event / Boss", function() V25.scanEvents(dbg) end },
-        { "Scan Data Pemain", function() V25.scanPlayerData(dbg) end },
-        { "Scan Place / Hatch (plot sendiri)", function() V25.scanPlaceHatch(dbg) end },
-        { "Scan Kamus Telur + Uji Filter", function() V25.scanEggVocab(dbg) end },
-        { "Scan Struktur Telur (prompt & visual)", function() V25.scanEggStruct(dbg) end },
-        { "Scan Telur Dibawa / Tool / Slot Area", function() V25.scanEggItem(dbg) end },
-        { "Scan BEDA (sebelum/sesudah bawa telur)", function() V25.scanCarryDiff(dbg) end, skipAll = true },
-        { "Scan Teks Filter Telur", scanFilterText },
-        { "Scan Safe Zone", function() V25.scanSafe(dbg) end },
-        { "Scan Shop GUI", scanShopGui },
-        { "Scan Telur", scanEggs },
-        { "Scan UI (tombol)", scanUI },
-        { "Scan Prompt sekitar", scanPrompts },
-        { "Scan Remote", scanRemotes },
-        { "Scan Stats", scanStats },
-        { "Scan Backpack (item)", function() V25.scanBackpack(dbg) end },
-        { "Scan Aksi (sell/upgrade/favorit)", function() V25.scanActions(dbg) end },
+        -- quick scans
+        { cat = "quick", "Scan Eggs", scanEggs },
+        { cat = "quick", "Scan UI (buttons)", scanUI },
+        { cat = "quick", "Scan Nearby Prompts", scanPrompts },
+        { cat = "quick", "Scan Remotes", scanRemotes },
+        { cat = "quick", "Scan Stats", scanStats },
+        { cat = "quick", "Scan Backpack (items)", function() V25.scanBackpack(dbg) end },
+        { cat = "quick", "Scan Actions (sell/upgrade/favorite)", function() V25.scanActions(dbg) end },
+        { cat = "quick", "Scan Shop GUI", scanShopGui },
+        { cat = "quick", "Scan Egg Filter Text", scanFilterText },
+        -- world & plot
+        { cat = "world", "Scan Treadmill (owner)", function() V25.scanTreadmill(dbg) end },
+        { cat = "world", "Scan Plot / Base", function() V25.scanPlot(dbg) end },
+        { cat = "world", "Scan Dr. Scramble Lab / Experiment", function() V25.scanLab(dbg) end },
+        { cat = "world", "Scan Open GUI Windows", function() V25.scanWindows(dbg) end },
+        { cat = "world", "Scan Egg Detail (webhook)", function() V25.scanEggDetail(dbg) end },
+        { cat = "world", "Scan Events / Bosses", function() V25.scanEvents(dbg) end },
+        { cat = "world", "Scan Player Data", function() V25.scanPlayerData(dbg) end },
+        { cat = "world", "Scan Place / Hatch (own plot)", function() V25.scanPlaceHatch(dbg) end },
+        { cat = "world", "Scan Egg Dictionary + Filter Test", function() V25.scanEggVocab(dbg) end },
+        { cat = "world", "Scan Egg Structure (prompt & visual)", function() V25.scanEggStruct(dbg) end },
+        { cat = "world", "Scan Carried Egg / Tool / Area Slots", function() V25.scanEggItem(dbg) end },
+        { cat = "world", "Scan DIFF (before/after carrying an egg)", function() V25.scanCarryDiff(dbg) end, skipAll = true },
+        { cat = "world", "Scan Safe Zone", function() V25.scanSafe(dbg) end },
+        -- remote tools
+        { cat = "remote", "TEST REMOTES: sell/favorite/upgrade/claim (ONE TAP)", function() V25.remoteProbe(dbg) end, skipAll = true },
+        { cat = "remote", "Full Remote List + Candidates (passive)", function() V25.remoteProbe(dbg, nil, true) end },
+        { cat = "remote", "Scan Key Remotes", function() V25.scanRemotesKey(dbg) end },
     }
-    local ALL_LABEL = "SCAN SEMUA (sekali tekan)"
-    table.insert(dbgBtns, 1, { ALL_LABEL, function()
-        dbg("##### SCAN SEMUA DIMULAI #####")
-        for _, d in ipairs(dbgBtns) do
-            if d[1] ~= ALL_LABEL and not d.skipAll then
-                dbg("")
-                dbg("##### " .. d[1] .. " #####")
-                local ok, err = pcall(d[2])
-                if not ok then dbg("ERROR: " .. tostring(err)) end
-                task.wait(0.15)
-            end
-        end
-        dbg("##### SELESAI. Tekan 'Salin output ke clipboard' lalu tempel ke chat #####")
-    end })
-    for _, d in ipairs(dbgBtns) do
-        buttonRow(pageDbg, d[1], function()
-            task.spawn(function()
-                local ok, err = pcall(d[2])
-                if not ok then dbg("ERROR scan: " .. tostring(err)) end
-            end)
-        end, d[1] == ALL_LABEL and THEME.warn or THEME.off)
+    local function runDbg(fn)
+        if not debugOn then dbg("Debug tools are locked. Turn on the Debug Tools switch first."); return end
+        task.spawn(function()
+            local ok, err = pcall(fn)
+            if not ok then dbg("ERROR: " .. tostring(err)) end
+        end)
     end
-    buttonRow(pageDbg, "Salin output ke clipboard", function()
-        if typeof(setclipboard) == "function" then setclipboard(table.concat(dbgLines, "\n")); log("Output debug disalin")
-        else log("Executor tidak mendukung setclipboard") end
-    end, THEME.off)
-    buttonRow(pageDbg, "Bersihkan output", function() table.clear(dbgLines); if dbgLabel then dbgLabel.Text = "" end end, THEME.off)
-    local _, dl = textBox(pageDbg, 160)
-    dbgLabel = dl
-
-    -- Animasi border + panel ping
-    local frames, lastT = 0, os.clock()
-    track(RunService.RenderStepped:Connect(function(dt)
-        if not uiAlive then return end
-        if win.Visible then
-            for _, r in ipairs(bh.rings) do r.grad.Rotation = (r.grad.Rotation + dt * r.speed) % 360 end
-            if bh.stars then bh.stars.Rotation = (bh.stars.Rotation + dt * 9) % 360 end
-            if bh.coreStroke then bh.coreStroke.Transparency = 0.2 + 0.2 * math.sin(os.clock() * 1.6) end
+    do
+        local sm = subMenu(dbgTab, "Quick Scans", { open = true })
+        buttonRow(sm.body, ALL_LABEL, function()
+            runDbg(function()
+                dbg("##### SCAN ALL STARTED #####")
+                for _, d in ipairs(dbgBtns) do
+                    if not d.skipAll then
+                        dbg("")
+                        dbg("##### " .. d[1] .. " #####")
+                        local ok, err = pcall(d[2])
+                        if not ok then dbg("ERROR: " .. tostring(err)) end
+                        task.wait(0.15)
+                    end
+                end
+                dbg("##### DONE. Tap 'Copy output' and paste it into the chat #####")
+            end)
+        end, THEME.accent)
+        local w = subMenu(dbgTab, "World & Plot")
+        local r = subMenu(dbgTab, "Remote Tools")
+        local bodies = { quick = sm.body, world = w.body, remote = r.body }
+        for _, d in ipairs(dbgBtns) do
+            buttonRow(bodies[d.cat], d[1], function() runDbg(d[2]) end)
         end
+    end
+    do
+        local sm = subMenu(dbgTab, "Output", { open = true })
+        buttonRow(sm.body, "Copy output", function()
+            if typeof(setclipboard) == "function" then setclipboard(table.concat(dbgLines, "\n")); log("Debug output copied")
+            else log("Executor does not support setclipboard") end
+        end)
+        buttonRow(sm.body, "Clear output", function() table.clear(dbgLines); if dbgLabel then dbgLabel.Text = "" end end)
+        local _, dl = textBox(sm.body, 160)
+        dbgLabel = dl
+    end
+
+    -- ===== PING / FPS PANEL =====
+    local frames, lastT = 0, os.clock()
+    track(RunService.RenderStepped:Connect(function()
+        if not uiAlive then return end
         frames += 1
         local now = os.clock()
         if now - lastT >= 0.5 then
@@ -6029,23 +6236,7 @@ local function buildUI()
             end
         end
     end))
-    do
-        local function addStroke(o, th)
-            if o:FindFirstChildOfClass("UIStroke") then return end
-            new("UIStroke", { Color = THEME.accent2, Thickness = th, Transparency = 0.7,
-                ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, o)
-        end
-        for _, d in ipairs(content:GetDescendants()) do
-            if d:IsA("TextButton") or d:IsA("TextBox") then
-                if d.BackgroundTransparency < 1 and d:FindFirstChildOfClass("UICorner") then addStroke(d, 1) end
-            elseif d:IsA("Frame") then
-                if d.BackgroundTransparency < 0.6 and d:FindFirstChildOfClass("UICorner")
-                    and (d.Size.Y.Offset >= 28 or d.AutomaticSize ~= Enum.AutomaticSize.None)
-                    and d.Size.X.Scale > 0.3 then addStroke(d, 1) end
-            end
-        end
-    end
-    applyCollapse()
+
     selectTab(tabs[1])
     refreshStats()
     setStatus("Idle", THEME.sub)
@@ -6057,7 +6248,7 @@ if config.targetMode ~= "All" and config.targetMode ~= "Filter" then config.targ
 
 local okUI, errUI = pcall(buildUI)
 if not okUI then
-    warn("[Vura] Gagal membuat UI: " .. tostring(errUI))
+    warn("[Vura] Failed to build UI: " .. tostring(errUI))
     pcall(cleanup)
     return
 end
