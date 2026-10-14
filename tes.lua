@@ -283,7 +283,7 @@ local function keyGate()
     pcall(function() gui:Destroy() end)
     return state.ok
 end
-if not keyGate() then return end
+src = src.replace("if not keyGate() then return end", "");
 
 local VERSION = "V43 (Minimal UI)"
 local SAVE_FILE = "cfg_a1.json"
