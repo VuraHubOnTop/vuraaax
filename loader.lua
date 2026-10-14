@@ -1,5 +1,5 @@
 -- loader.lua
-local BASE = "https://nigger.wisp.uno"  -- ganti URL Railway kamu
+local BASE = "https://TNJ.wispbyte.app"  -- ganti URL Railway kamu
 
 -- pastikan key sudah di-set user
 if not getgenv().script_key then
