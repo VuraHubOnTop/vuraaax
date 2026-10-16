@@ -1,418 +1,203 @@
 -- ==========================================
--- VURA | CAR FLIPPER HUB v2 (REAL: Remote Spy + Auto Farm)
--- ==========================================
--- Cara pakai singkat:
--- 1. Buka tab "Remote", nyalakan Spy.
--- 2. Lakukan aksi di game SEKALI secara manual (beli mobil / flip / jual).
--- 3. Remote-nya muncul di daftar -> tekan [FARM] atau [BUY] untuk memilihnya.
--- 4. Di tab "Farm", nyalakan Auto Farm / Auto Buy. Script akan memanggil
---    remote ASLI game dengan argumen persis seperti yang kamu lakukan.
+-- ⚡ VURA | DATABASE FARM & REMOTE LOGGER ⚡
 -- ==========================================
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-local VirtualUser = game:GetService("VirtualUser")
 local player = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
 local guiParent = (gethui and gethui()) or PlayerGui
 
 for _, p in ipairs({guiParent, PlayerGui}) do
-	local old = p:FindFirstChild("VuraCarFlipper")
+	local old = p:FindFirstChild("VuraServerFarmLogger")
 	if old then old:Destroy() end
 end
 
 -- ==========================================
--- STATE
+-- 1. DATABASE 100% LENGKAP (ID BASE)
 -- ==========================================
-local S = {
-	farm = false, buy = false, prompt = false, collect = false,
-	afk = true, speedOn = false, infJump = false, spy = true,
-	farmDelay = 0.5, buyDelay = 1, range = 40, speed = 50,
+local carDatabase = {
+	-- Rarity 0 (Common)
+	["Acad iRVS Sedan"] = 0, ["Acadi RVS Sedan"] = 0, ["Artho G1000"] = 0, ["Bantt Rental"] = 0,
+	["Bogdan 2099"] = 0, ["Chiverleta Golde"] = 0, ["Chiverleta Outskirts BT"] = 0, ["Chiverleta Taohra BT"] = 0,
+	["DAW 0909"] = 0, ["Deutschotoren C3 B63"] = 0, ["Deutschotoren C5 B21"] = 0, ["Deutschotoren C543"] = 0,
+	["Fedsel Coronet"] = 0, ["Fedsel E-Line Cargo"] = 0, ["Hakusho Ciri"] = 0, ["Ivar Manguster"] = 0,
+	["Nikken Altimata"] = 0, ["Susuri Vitality"] = 0, ["Volfsen Passo"] = 0, ["Volfsen Rolf"] = 0,
+
+	-- Rarity 1 (Uncommon)
+	["Artho G451"] = 1, ["Artho G672"] = 1, ["Artho X723"] = 1, ["Chiverleta Cerano"] = 1,
+	["Dawson Hammer JHT8"] = 1, ["Deutschotoren C3E5"] = 1, ["Deutschotoren C560"] = 1, ["Deutschotoren C783"] = 1,
+	["Fedsel Expedition"] = 1, ["Fedsel Stallion G3"] = 1, ["Hakusho Concord"] = 1, ["Luxius OJ100"] = 1,
+	["Marcalen-Denz B660"] = 1, ["Marcalen-Denz T600"] = 1, ["Mazuta 29"] = 1, ["Mazuta Mint"] = 1,
+	["Preischel Crayele"] = 1, ["Quantum H26"] = 1, ["Tokina Karma"] = 1, ["Tokina RP60"] = 1,
+
+	-- Rarity 2 (Rare)
+	["Artho G623"] = 2, ["Chiverleta Ceretta X05"] = 2, ["Chiverleta Taohra SVV"] = 2, ["Cryele 222B"] = 2,
+	["Dawson Hammer SCV"] = 2, ["Deutschotoren C297x"] = 2, ["Deutschotoren C393"] = 2, ["Fedsel Expedition Hybrid"] = 2,
+	["Fedsel Stallion G5"] = 2, ["Land Ranger V500"] = 2, ["Luxius VQ"] = 2, ["Marcalen-Denz K413"] = 2,
+	["Mazuta JO4"] = 2, ["Mitta Aydens REO"] = 2, ["Nikken 290S"] = 2, ["Nikken Sinata B21"] = 2,
+	["Quantum N500"] = 2, ["Suiba Presse RST"] = 2, ["Tokina Absoluta SR 3.0"] = 2, 
+
+	-- Rarity 3 (Epic / Legend)
+	["Artho F9 ST"] = 3, ["Artho G770"] = 3, ["Artho VS600"] = 3, ["Chiverleta Cerano XZ2"] = 3,
+	["Chiverleta Ceretta X07"] = 3, ["Chiverleta Imalo 67"] = 3, ["Dawson Competition"] = 3, ["Dawson Hammer"] = 3,
+	["Dawson Hammer 70"] = 3, ["Dawson Rhino SCT"] = 3, ["Deserter Grand Prince"] = 3, ["Deutschotoren C2"] = 3,
+	["Deutschotoren C3"] = 3, ["Deutschotoren C4 DSG"] = 3, ["Deutschotoren C483"] = 3, ["Deutschotoren C5 600"] = 3,
+	["Deutschotoren C873"] = 3, ["Deutschotoren S5"] = 3, ["Deutschotoren U8"] = 3, ["Hakusho MRB Sport"] = 3,
+	["Lilia Exima"] = 3, ["Luxius BG600"] = 3, ["Marcalen-Denz VT"] = 3, ["Marcalen-Denz LPS"] = 3,
+	["Marcalen-Denz LPS94"] = 3, ["Nikken Starline S340"] = 3, ["Nikken Starline S350"] = 3, ["Preischel 313n"] = 3,
+	["Tokina Absoluta SR 2.0"] = 3,
 }
-local Sel = {farm = nil, buy = nil}
-local Log = {}
-local alive = true
-
-local function hrp()
-	local c = player.Character
-	return c and c:FindFirstChild("HumanoidRootPart")
-end
 
 -- ==========================================
--- UANG ASLI
+-- 2. SMART REMOTE CATCHER & LOGGER
 -- ==========================================
-local moneyNames = {"uang", "cash", "money", "coin", "gold", "dollar", "$"}
-local function getRealMoney()
-	local ls = player:FindFirstChild("leaderstats")
-	if ls then
-		for _, st in ipairs(ls:GetChildren()) do
-			local n = st.Name:lower()
-			for _, k in ipairs(moneyNames) do
-				if n:find(k, 1, true) and typeof(st.Value) == "number" then return st.Value end
-			end
-		end
-		for _, st in ipairs(ls:GetChildren()) do -- fallback: stat angka pertama
-			if typeof(st.Value) == "number" then return st.Value end
-		end
-	end
-	for _, k in ipairs({"Cash", "Money", "Coins"}) do -- fallback: Attribute
-		local a = player:GetAttribute(k)
-		if typeof(a) == "number" then return a end
-	end
-	return nil
-end
+_G.TargetRemote = nil
+_G.IsFarming = false
+local isCatching = false
+local capturedPath = "Belum ada remote tertangkap"
 
-local function fmt(n)
-	local s = tostring(math.floor(n))
-	local r = s:reverse():gsub("(%d%d%d)", "%1."):reverse()
-	return (r:gsub("^%.", ""))
-end
-
--- ==========================================
--- REMOTE SPY (hook asli)
--- ==========================================
-local refreshLog -- forward
-local noisy = {"move", "camera", "ping", "heartbeat", "mouse", "input", "replicat", "cframe", "look"}
-local function isNoisy(name)
-	name = name:lower()
-	for _, w in ipairs(noisy) do
-		if name:find(w, 1, true) then return true end
-	end
-	return false
-end
-
-local function argStr(t)
-	local parts = {}
-	for i = 1, math.min(t.n, 4) do
-		local ok, s = pcall(tostring, t[i])
-		parts[#parts + 1] = ok and s or "?"
-	end
-	local out = table.concat(parts, ", ")
-	return #out > 38 and out:sub(1, 38) .. ".." or out
-end
-
-local function record(remote, args)
-	if isNoisy(remote.Name) then return end
-	local key = remote:GetFullName()
-	for i, e in ipairs(Log) do
-		if e.key == key then
-			e.args = args; e.count += 1
-			if refreshLog then refreshLog() end
-			return
-		end
-	end
-	table.insert(Log, 1, {key = key, remote = remote, args = args, count = 1})
-	if #Log > 40 then table.remove(Log) end
-	if refreshLog then refreshLog() end
-end
-
-local hookOK = false
 if hookmetamethod and getnamecallmethod then
-	local oldNC
-	local hook = function(self, ...)
-		local m = getnamecallmethod()
-		if S.spy and (m == "FireServer" or m == "InvokeServer")
-			and typeof(self) == "Instance" and not (checkcaller and checkcaller()) then
-			task.defer(record, self, table.pack(...))
+	local oldNamecall
+	oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+		local method = getnamecallmethod()
+		if isCatching and (method == "FireServer" or method == "InvokeServer") and not checkcaller() then
+			_G.TargetRemote = self
+			capturedPath = self:GetFullName()
+			isCatching = false 
 		end
-		return oldNC(self, ...)
-	end
-	local ok = pcall(function()
-		oldNC = hookmetamethod(game, "__namecall", newcclosure and newcclosure(hook) or hook)
-	end)
-	hookOK = ok
-end
-
-local function fireEntry(e)
-	if not e or not e.remote or not e.remote.Parent then return false end
-	local ok = pcall(function()
-		if e.remote:IsA("RemoteFunction") then
-			e.remote:InvokeServer(unpack(e.args, 1, e.args.n))
-		else
-			e.remote:FireServer(unpack(e.args, 1, e.args.n))
-		end
-	end)
-	return ok
+		return oldNamecall(self, ...)
+	end))
 end
 
 -- ==========================================
--- UI
+-- 3. UI PREMIUM CLAY & GRID (RESIZABLE)
 -- ==========================================
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "VuraCarFlipper"
+ScreenGui.Name = "VuraServerFarmLogger"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = guiParent
 
 local MainFrame = Instance.new("Frame", ScreenGui)
-MainFrame.Size = UDim2.new(0, 420, 0, 290)
-MainFrame.Position = UDim2.new(0.5, -210, 0.5, -145)
+MainFrame.Size = UDim2.new(0, 320, 0, 210)
+MainFrame.Position = UDim2.new(0.5, -160, 0.5, -105)
 MainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 18)
 MainFrame.BorderSizePixel = 0
 MainFrame.Active = true
 MainFrame.Draggable = true
 MainFrame.ClipsDescendants = true
 Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
-local stroke = Instance.new("UIStroke", MainFrame)
-stroke.Color = Color3.fromRGB(80, 50, 120)
-stroke.Thickness = 1.5
+Instance.new("UIStroke", MainFrame).Color = Color3.fromRGB(130, 80, 220)
+Instance.new("UIStroke", MainFrame).Thickness = 1.5
+
+-- Gradien & Tekstur Grid
 local grad = Instance.new("UIGradient", MainFrame)
 grad.Color = ColorSequence.new{
-	ColorSequenceKeypoint.new(0, Color3.fromRGB(30, 20, 45)),
+	ColorSequenceKeypoint.new(0, Color3.fromRGB(35, 20, 50)),
 	ColorSequenceKeypoint.new(1, Color3.fromRGB(10, 10, 12)),
 }
 grad.Rotation = 45
 
+local PatternGrid = Instance.new("ImageLabel", MainFrame)
+PatternGrid.Size = UDim2.new(1, 0, 1, 0)
+PatternGrid.BackgroundTransparency = 1
+PatternGrid.Image = "rbxassetid://4743439972"
+PatternGrid.ImageTransparency = 0.92
+PatternGrid.ScaleType = Enum.ScaleType.Tile
+PatternGrid.TileSize = UDim2.new(0, 35, 0, 35)
+PatternGrid.ZIndex = 0
+
+-- Header
 local TopBar = Instance.new("Frame", MainFrame)
-TopBar.Size = UDim2.new(1, 0, 0, 32)
+TopBar.Size = UDim2.new(1, 0, 0, 30)
 TopBar.BackgroundTransparency = 1
 
 local Title = Instance.new("TextLabel", TopBar)
-Title.Size = UDim2.new(0.4, 0, 1, 0)
-Title.Position = UDim2.new(0.03, 0, 0, 0)
+Title.Size = UDim2.new(0.8, 0, 1, 0)
+Title.Position = UDim2.new(0.04, 0, 0, 0)
 Title.BackgroundTransparency = 1
-Title.Text = "Vura | Auto Flipper"
+Title.Text = "⚡ VURA | Logger & Farm"
 Title.Font = Enum.Font.GothamBlack
-Title.TextSize = 14
-Title.TextColor3 = Color3.fromRGB(200, 200, 220)
+Title.TextSize = 13
+Title.TextColor3 = Color3.fromRGB(230, 230, 255)
 Title.TextXAlignment = Enum.TextXAlignment.Left
 
-local UangLabel = Instance.new("TextLabel", TopBar)
-UangLabel.Size = UDim2.new(0.45, 0, 1, 0)
-UangLabel.Position = UDim2.new(0.4, 0, 0, 0)
-UangLabel.BackgroundTransparency = 1
-UangLabel.Text = "$..."
-UangLabel.Font = Enum.Font.GothamBold
-UangLabel.TextSize = 12
-UangLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
-UangLabel.TextXAlignment = Enum.TextXAlignment.Right
-
 local CloseBtn = Instance.new("TextButton", TopBar)
-CloseBtn.Size = UDim2.new(0, 24, 0, 24)
-CloseBtn.Position = UDim2.new(1, -30, 0, 4)
-CloseBtn.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
+CloseBtn.Size = UDim2.new(0, 20, 0, 20)
+CloseBtn.Position = UDim2.new(1, -26, 0, 5)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 50)
 CloseBtn.Text = "X"
 CloseBtn.Font = Enum.Font.GothamBlack
 CloseBtn.TextColor3 = Color3.new(1, 1, 1)
-CloseBtn.TextSize = 12
+CloseBtn.TextSize = 11
 Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 6)
+CloseBtn.MouseButton1Click:Connect(function() ScreenGui:Destroy() _G.IsFarming = false end)
 
--- Tab bar
-local TabBar = Instance.new("Frame", MainFrame)
-TabBar.Size = UDim2.new(0.94, 0, 0, 24)
-TabBar.Position = UDim2.new(0.03, 0, 0, 34)
-TabBar.BackgroundTransparency = 1
-local tl = Instance.new("UIListLayout", TabBar)
-tl.FillDirection = Enum.FillDirection.Horizontal
-tl.Padding = UDim.new(0, 4)
+local Line = Instance.new("Frame", MainFrame)
+Line.Size = UDim2.new(0.92, 0, 0, 1)
+Line.Position = UDim2.new(0.04, 0, 0, 30)
+Line.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+Line.BackgroundTransparency = 0.85
 
-local Content = Instance.new("Frame", MainFrame)
-Content.Size = UDim2.new(0.94, 0, 1, -68)
-Content.Position = UDim2.new(0.03, 0, 0, 62)
-Content.BackgroundTransparency = 1
+-- ==========================================
+-- 4. TOMBOL KONTROL & LOG BOX
+-- ==========================================
+local CatchBtn = Instance.new("TextButton", MainFrame)
+CatchBtn.Size = UDim2.new(0.85, 0, 0, 28)
+CatchBtn.Position = UDim2.new(0.075, 0, 0.2, 0)
+CatchBtn.BackgroundColor3 = Color3.fromRGB(180, 120, 30)
+CatchBtn.Text = "🎯 1. Tangkap Remote"
+CatchBtn.Font = Enum.Font.GothamBold
+CatchBtn.TextSize = 11
+CatchBtn.TextColor3 = Color3.new(1, 1, 1)
+Instance.new("UICorner", CatchBtn).CornerRadius = UDim.new(0, 6)
 
-local pages, tabBtns = {}, {}
-local function newPage(name)
-	local p = Instance.new("ScrollingFrame", Content)
-	p.Size = UDim2.new(1, 0, 1, 0)
-	p.BackgroundTransparency = 1
-	p.BorderSizePixel = 0
-	p.ScrollBarThickness = 2
-	p.CanvasSize = UDim2.new()
-	p.AutomaticCanvasSize = Enum.AutomaticSize.Y
-	p.Visible = false
-	local l = Instance.new("UIListLayout", p)
-	l.Padding = UDim.new(0, 5)
-	pages[name] = p
+local LogBox = Instance.new("TextBox", MainFrame)
+LogBox.Size = UDim2.new(0.85, 0, 0, 30)
+LogBox.Position = UDim2.new(0.075, 0, 0.38, 0)
+LogBox.BackgroundColor3 = Color3.fromRGB(25, 22, 35)
+LogBox.Text = "Path Remote akan muncul disini..."
+LogBox.Font = Enum.Font.Code
+LogBox.TextSize = 10
+LogBox.TextColor3 = Color3.fromRGB(100, 255, 200)
+LogBox.ClearTextOnFocus = false
+LogBox.Editable = false
+Instance.new("UICorner", LogBox).CornerRadius = UDim.new(0, 6)
+Instance.new("UIStroke", LogBox).Color = Color3.fromRGB(70, 60, 100)
 
-	local b = Instance.new("TextButton", TabBar)
-	b.Size = UDim2.new(0, 80, 1, 0)
-	b.BackgroundColor3 = Color3.fromRGB(35, 30, 50)
-	b.Text = name
-	b.Font = Enum.Font.GothamBold
-	b.TextSize = 11
-	b.TextColor3 = Color3.new(1, 1, 1)
-	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
-	tabBtns[name] = b
-	b.MouseButton1Click:Connect(function()
-		for n, pg in pairs(pages) do
-			pg.Visible = (n == name)
-			tabBtns[n].BackgroundColor3 = (n == name) and Color3.fromRGB(90, 55, 150) or Color3.fromRGB(35, 30, 50)
-		end
-	end)
-	return p
-end
+local CopyBtn = Instance.new("TextButton", MainFrame)
+CopyBtn.Size = UDim2.new(0.85, 0, 0, 24)
+CopyBtn.Position = UDim2.new(0.075, 0, 0.57, 0)
+CopyBtn.BackgroundColor3 = Color3.fromRGB(70, 50, 120)
+CopyBtn.Text = "📋 Salin Path Remote ke Clipboard"
+CopyBtn.Font = Enum.Font.GothamBold
+CopyBtn.TextSize = 10
+CopyBtn.TextColor3 = Color3.new(1, 1, 1)
+Instance.new("UICorner", CopyBtn).CornerRadius = UDim.new(0, 5)
 
-local function label(page, text)
-	local l = Instance.new("TextLabel", page)
-	l.Size = UDim2.new(1, -8, 0, 22)
-	l.BackgroundTransparency = 1
-	l.Text = text
-	l.Font = Enum.Font.GothamMedium
-	l.TextSize = 11
-	l.TextColor3 = Color3.fromRGB(190, 190, 210)
-	l.TextXAlignment = Enum.TextXAlignment.Left
-	l.TextWrapped = true
-	return l
-end
+local StartBtn = Instance.new("TextButton", MainFrame)
+StartBtn.Size = UDim2.new(0.85, 0, 0, 32)
+StartBtn.Position = UDim2.new(0.075, 0, 0.72, 0)
+StartBtn.BackgroundColor3 = Color3.fromRGB(40, 140, 70)
+StartBtn.Text = "⚡ 2. AUTO BUY (DATABASE) ⚡"
+StartBtn.Font = Enum.Font.GothamBlack
+StartBtn.TextSize = 11
+StartBtn.TextColor3 = Color3.new(1, 1, 1)
+Instance.new("UICorner", StartBtn).CornerRadius = UDim.new(0, 6)
 
-local function toggle(page, text, key, cb)
-	local b = Instance.new("TextButton", page)
-	b.Size = UDim2.new(1, -8, 0, 30)
-	b.Font = Enum.Font.GothamBold
-	b.TextSize = 12
-	b.TextColor3 = Color3.new(1, 1, 1)
-	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
-	local function paint()
-		b.Text = text .. ": " .. (S[key] and "ON" or "OFF")
-		b.BackgroundColor3 = S[key] and Color3.fromRGB(40, 120, 60) or Color3.fromRGB(60, 40, 50)
-	end
-	paint()
-	b.MouseButton1Click:Connect(function()
-		S[key] = not S[key]
-		paint()
-		if cb then cb(S[key]) end
-	end)
-end
+local StatusText = Instance.new("TextLabel", MainFrame)
+StatusText.Size = UDim2.new(1, 0, 0, 18)
+StatusText.Position = UDim2.new(0, 0, 0.89, 0)
+StatusText.BackgroundTransparency = 1
+StatusText.Text = "Status: Standby"
+StatusText.Font = Enum.Font.GothamMedium
+StatusText.TextSize = 10
+StatusText.TextColor3 = Color3.fromRGB(180, 180, 200)
 
-local function button(page, text, cb, color)
-	local b = Instance.new("TextButton", page)
-	b.Size = UDim2.new(1, -8, 0, 28)
-	b.BackgroundColor3 = color or Color3.fromRGB(60, 50, 100)
-	b.Text = text
-	b.Font = Enum.Font.GothamBold
-	b.TextSize = 12
-	b.TextColor3 = Color3.new(1, 1, 1)
-	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
-	b.MouseButton1Click:Connect(cb)
-	return b
-end
-
-local function input(page, text, key)
-	local f = Instance.new("Frame", page)
-	f.Size = UDim2.new(1, -8, 0, 28)
-	f.BackgroundTransparency = 1
-	local l = Instance.new("TextLabel", f)
-	l.Size = UDim2.new(0.65, 0, 1, 0)
-	l.BackgroundTransparency = 1
-	l.Text = text
-	l.Font = Enum.Font.GothamMedium
-	l.TextSize = 11
-	l.TextColor3 = Color3.fromRGB(190, 190, 210)
-	l.TextXAlignment = Enum.TextXAlignment.Left
-	local t = Instance.new("TextBox", f)
-	t.Size = UDim2.new(0.33, 0, 1, 0)
-	t.Position = UDim2.new(0.67, 0, 0, 0)
-	t.BackgroundColor3 = Color3.fromRGB(30, 28, 40)
-	t.Text = tostring(S[key])
-	t.Font = Enum.Font.GothamBold
-	t.TextSize = 12
-	t.TextColor3 = Color3.new(1, 1, 1)
-	Instance.new("UICorner", t).CornerRadius = UDim.new(0, 5)
-	t.FocusLost:Connect(function()
-		local n = tonumber(t.Text)
-		if n and n >= 0 then S[key] = n else t.Text = tostring(S[key]) end
-	end)
-end
-
-local FarmPage = newPage("Farm")
-local RemotePage = newPage("Remote")
-local MiscPage = newPage("Misc")
-
--- ---------- FARM ----------
-local StatusLbl = label(FarmPage, "")
-StatusLbl.Size = UDim2.new(1, -8, 0, 34)
-local function updateStatus()
-	StatusLbl.Text = "FARM remote: " .. (Sel.farm and Sel.farm.remote.Name or "belum dipilih")
-		.. "\nBUY remote: " .. (Sel.buy and Sel.buy.remote.Name or "belum dipilih")
-end
-updateStatus()
-toggle(FarmPage, "Auto Farm (replay remote FARM)", "farm")
-toggle(FarmPage, "Auto Buy (replay remote BUY)", "buy")
-toggle(FarmPage, "Auto Prompt (E / ProximityPrompt)", "prompt")
-toggle(FarmPage, "Auto Collect (coin/cash/money dekat)", "collect")
-input(FarmPage, "Delay Farm (detik)", "farmDelay")
-input(FarmPage, "Delay Buy (detik)", "buyDelay")
-input(FarmPage, "Jarak Prompt/Collect (stud)", "range")
-local EarnLbl = label(FarmPage, "Pendapatan: -")
-
--- ---------- REMOTE ----------
-toggle(RemotePage, "Remote Spy", "spy")
-label(RemotePage, hookOK and "Hook aktif. Lakukan aksi di game, lalu pilih remote-nya."
-	or "Executor kamu tidak mendukung hookmetamethod. Spy tidak jalan.")
-button(RemotePage, "Hapus Log", function() Log = {}; refreshLog() end, Color3.fromRGB(110, 50, 50))
-local LogHolder = Instance.new("Frame", RemotePage)
-LogHolder.Size = UDim2.new(1, -8, 0, 0)
-LogHolder.AutomaticSize = Enum.AutomaticSize.Y
-LogHolder.BackgroundTransparency = 1
-local ll = Instance.new("UIListLayout", LogHolder)
-ll.Padding = UDim.new(0, 4)
-
-local pending = false
-refreshLog = function()
-	if pending then return end
-	pending = true
-	task.delay(0.25, function()
-		pending = false
-		if not alive then return end
-		for _, c in ipairs(LogHolder:GetChildren()) do
-			if c:IsA("Frame") then c:Destroy() end
-		end
-		for _, e in ipairs(Log) do
-			local row = Instance.new("Frame", LogHolder)
-			row.Size = UDim2.new(1, 0, 0, 38)
-			row.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
-			Instance.new("UICorner", row).CornerRadius = UDim.new(0, 5)
-			local t = Instance.new("TextLabel", row)
-			t.Size = UDim2.new(0.58, 0, 1, 0)
-			t.Position = UDim2.new(0.02, 0, 0, 0)
-			t.BackgroundTransparency = 1
-			t.Text = e.remote.Name .. " x" .. e.count .. "\n(" .. argStr(e.args) .. ")"
-			t.Font = Enum.Font.Gotham
-			t.TextSize = 10
-			t.TextColor3 = Color3.new(1, 1, 1)
-			t.TextXAlignment = Enum.TextXAlignment.Left
-			t.TextWrapped = true
-			for i, kind in ipairs({"farm", "buy"}) do
-				local b = Instance.new("TextButton", row)
-				b.Size = UDim2.new(0.18, 0, 0.6, 0)
-				b.Position = UDim2.new(0.61 + (i - 1) * 0.19, 0, 0.2, 0)
-				b.Text = kind:upper()
-				b.Font = Enum.Font.GothamBold
-				b.TextSize = 10
-				b.TextColor3 = Color3.new(1, 1, 1)
-				b.BackgroundColor3 = (Sel[kind] == e) and Color3.fromRGB(40, 120, 60) or Color3.fromRGB(70, 55, 110)
-				Instance.new("UICorner", b).CornerRadius = UDim.new(0, 4)
-				b.MouseButton1Click:Connect(function()
-					Sel[kind] = e
-					updateStatus()
-					refreshLog()
-				end)
-			end
-		end
-	end)
-end
-
--- ---------- MISC ----------
-toggle(MiscPage, "Anti AFK", "afk")
-toggle(MiscPage, "Speed Hack", "speedOn")
-input(MiscPage, "WalkSpeed", "speed")
-toggle(MiscPage, "Infinite Jump", "infJump")
-button(MiscPage, "Hapus UI & Matikan Semua", function()
-	alive = false
-	ScreenGui:Destroy()
-end, Color3.fromRGB(110, 50, 50))
-label(MiscPage, "fireproximityprompt: " .. (fireproximityprompt and "OK" or "tidak ada")
-	.. " | firetouchinterest: " .. (firetouchinterest and "OK" or "tidak ada"))
-
--- default tab
-pages.Farm.Visible = true
-tabBtns.Farm.BackgroundColor3 = Color3.fromRGB(90, 55, 150)
-
--- ---------- RESIZE ----------
+-- Fitur Resize Pojok Kanan Bawah
 local ResizeHandle = Instance.new("TextButton", MainFrame)
-ResizeHandle.Size = UDim2.new(0, 22, 0, 22)
-ResizeHandle.Position = UDim2.new(1, -22, 1, -22)
+ResizeHandle.Size = UDim2.new(0, 20, 0, 20)
+ResizeHandle.Position = UDim2.new(1, -20, 1, -20)
 ResizeHandle.BackgroundTransparency = 1
 ResizeHandle.Text = "◢"
 ResizeHandle.TextColor3 = Color3.fromRGB(150, 150, 150)
@@ -432,7 +217,7 @@ end)
 UIS.InputChanged:Connect(function(i)
 	if resizing and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
 		local d = i.Position - dragStart
-		MainFrame.Size = UDim2.new(0, math.max(300, startSize.X.Offset + d.X), 0, math.max(220, startSize.Y.Offset + d.Y))
+		MainFrame.Size = UDim2.new(0, math.max(280, startSize.X.Offset + d.X), 0, math.max(190, startSize.Y.Offset + d.Y))
 	end
 end)
 UIS.InputEnded:Connect(function(i)
@@ -441,126 +226,76 @@ UIS.InputEnded:Connect(function(i)
 	end
 end)
 
-CloseBtn.MouseButton1Click:Connect(function()
-	alive = false
-	ScreenGui:Destroy()
+-- ==========================================
+-- 5. LOGIKA TOMBOL & EKSEKUSI
+-- ==========================================
+CatchBtn.MouseButton1Click:Connect(function()
+	isCatching = true
+	CatchBtn.Text = "⏳ Beli 1 Mobil Manual Sekarang!"
+	CatchBtn.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
 end)
 
--- ==========================================
--- LOOP NYATA
--- ==========================================
-
--- Uang asli + pendapatan
-local startMoney, startT = nil, os.clock()
+-- Update Log otomatis saat tertangkap
 task.spawn(function()
-	while alive do
-		local m = getRealMoney()
-		if m then
-			startMoney = startMoney or m
-			UangLabel.Text = "Uang Asli: $" .. fmt(m)
-			local gained = m - startMoney
-			local mins = math.max((os.clock() - startT) / 60, 0.01)
-			EarnLbl.Text = ("Pendapatan: %s$%s  (~%s$/menit)"):format(gained < 0 and "-" or "+", fmt(math.abs(gained)), fmt(gained / mins))
-		else
-			UangLabel.Text = "Uang: tidak terbaca"
+	while task.wait(0.3) do
+		if _G.TargetRemote then
+			CatchBtn.Text = "✅ REMOTE TERTANGKAP!"
+			CatchBtn.BackgroundColor3 = Color3.fromRGB(40, 100, 180)
+			LogBox.Text = capturedPath
+			StatusText.Text = "Siap disalin dan dikirim ke AI!"
+			isCatching = false
 		end
-		task.wait(0.5)
 	end
 end)
 
--- Auto Farm (replay remote asli)
+-- Tombol Salin otomatis ke Clipboard
+CopyBtn.MouseButton1Click:Connect(function()
+	if setclipboard then
+		setclipboard(capturedPath)
+		StatusText.Text = "Berhasil disalin! Kirim ke sini ya."
+		StatusText.TextColor3 = Color3.fromRGB(100, 255, 100)
+	else
+		StatusText.Text = "Executor tidak mendukung clipboard."
+		StatusText.TextColor3 = Color3.fromRGB(255, 100, 100)
+	end
+end)
+
+StartBtn.MouseButton1Click:Connect(function()
+	if not _G.TargetRemote then
+		StatusText.Text = "⚠️ Tangkap remote dulu!"
+		StatusText.TextColor3 = Color3.fromRGB(255, 100, 100)
+		return
+	end
+	
+	_G.IsFarming = not _G.IsFarming
+	if _G.IsFarming then
+		StartBtn.Text = "🛑 STOP AUTO FARM 🛑"
+		StartBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 50)
+		StatusText.Text = "Menembak server dengan Database..."
+		StatusText.TextColor3 = Color3.fromRGB(100, 255, 100)
+	else
+		StartBtn.Text = "⚡ 2. AUTO BUY (DATABASE) ⚡"
+		StartBtn.BackgroundColor3 = Color3.fromRGB(40, 140, 70)
+		StatusText.Text = "Standby."
+		StatusText.TextColor3 = Color3.fromRGB(180, 180, 200)
+	end
+end)
+
+-- Core Loop Server-Side By ID
 task.spawn(function()
-	while alive do
-		if S.farm and Sel.farm then fireEntry(Sel.farm) end
-		task.wait(math.max(S.farmDelay, 0.05))
-	end
-end)
-
--- Auto Buy (replay remote asli)
-task.spawn(function()
-	while alive do
-		if S.buy and Sel.buy then fireEntry(Sel.buy) end
-		task.wait(math.max(S.buyDelay, 0.1))
-	end
-end)
-
--- Auto Prompt + Auto Collect
-local prompts, pickups, lastScan = {}, {}, 0
-local pickWords = {"coin", "cash", "money", "collect", "pickup", "reward", "drop"}
-local function scan()
-	prompts, pickups = {}, {}
-	for _, d in ipairs(workspace:GetDescendants()) do
-		if d:IsA("ProximityPrompt") then
-			prompts[#prompts + 1] = d
-		elseif d:IsA("BasePart") and d:FindFirstChild("TouchInterest") then
-			local n = d.Name:lower()
-			for _, w in ipairs(pickWords) do
-				if n:find(w, 1, true) then pickups[#pickups + 1] = d; break end
+	while task.wait(0.1) do
+		if _G.IsFarming and _G.TargetRemote then
+			for carID, rarity in pairs(carDatabase) do
+				if not _G.IsFarming then break end 
+				pcall(function()
+					if _G.TargetRemote:IsA("RemoteFunction") then
+						_G.TargetRemote:InvokeServer(carID)
+					else
+						_G.TargetRemote:FireServer(carID)
+					end
+				end)
+				task.wait(0.05) 
 			end
 		end
-	end
-end
-
-local function posOf(inst)
-	if not inst then return nil end
-	if inst:IsA("BasePart") then return inst.Position end
-	if inst:IsA("Attachment") then return inst.WorldPosition end
-	if inst:IsA("Model") then return inst:GetPivot().Position end
-end
-
-task.spawn(function()
-	while alive do
-		if S.prompt or S.collect then
-			if os.clock() - lastScan > 3 then lastScan = os.clock(); pcall(scan) end
-			local root = hrp()
-			if root then
-				if S.prompt and fireproximityprompt then
-					for _, p in ipairs(prompts) do
-						if p.Parent and p.Enabled then
-							local pos = posOf(p.Parent)
-							if pos and (pos - root.Position).Magnitude <= S.range then
-								pcall(fireproximityprompt, p)
-							end
-						end
-					end
-				end
-				if S.collect and firetouchinterest then
-					for _, part in ipairs(pickups) do
-						if part.Parent and (part.Position - root.Position).Magnitude <= S.range then
-							pcall(function()
-								firetouchinterest(root, part, 0)
-								firetouchinterest(root, part, 1)
-							end)
-						end
-					end
-				end
-			end
-		end
-		task.wait(0.3)
-	end
-end)
-
--- Anti AFK
-player.Idled:Connect(function()
-	if S.afk and alive then
-		VirtualUser:CaptureController()
-		VirtualUser:ClickButton2(Vector2.new())
-	end
-end)
-
--- Speed hack
-RunService.Heartbeat:Connect(function()
-	if not alive or not S.speedOn then return end
-	local c = player.Character
-	local h = c and c:FindFirstChildOfClass("Humanoid")
-	if h then h.WalkSpeed = S.speed end
-end)
-
--- Infinite jump
-UIS.JumpRequest:Connect(function()
-	if alive and S.infJump then
-		local c = player.Character
-		local h = c and c:FindFirstChildOfClass("Humanoid")
-		if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
 	end
 end)
