@@ -1,61 +1,37 @@
--- loader.lua
-local BASE = "https://TNJ.wispbyte.app"  -- ganti URL Railway kamu
+-- ============================================
+-- LOADER UNIVERSAL - Template
+-- Tinggal tambahin link raw script di tabel
+-- ============================================
 
--- pastikan key sudah di-set user
-if not getgenv().script_key then
-    warn("[Key] Key belum diisi. Set dulu: getgenv().script_key = \"KEY-KAMU\"")
-    return
-end
+local scripts = {
+    -- ===== GAME YANG UDAH DIISI PLACEID =====
+    [121864768012064] = "LINK_RAW_SCRIPT_FISH_IT",           -- Fish It
+    [136533956395153] = "LINK_RAW_SCRIPT_CAR_FLIPPER",       -- Car Flipper
+    [15494065142]     = "LINK_RAW_SCRIPT_CLICK_A_ROCK",      -- Click A Rock
+    [13284033561]     = "LINK_RAW_SCRIPT_FISHING_FRENZY",    -- Fishing Frenzy Simulator
+    [8962384769]      = "LINK_RAW_SCRIPT_FIREWORK_SIM",      -- Firework Simulator
+    [126884695634066] = "LINK_RAW_SCRIPT_GROW_A_GARDEN",     -- Grow a Garden
+    [8737899170]      = "LINK_RAW_SCRIPT_PET_SIM_99",        -- Pet Simulator 99
+    [2753915549]      = "LINK_RAW_SCRIPT_BLOX_FRUITS",       -- Blox Fruits (Sea 1)
+    [4442272183]      = "LINK_RAW_SCRIPT_BLOX_FRUITS_2",     -- Blox Fruits (Sea 2)
+    [7449423635]      = "LINK_RAW_SCRIPT_BLOX_FRUITS_3",     -- Blox Fruits (Sea 3)
 
--- fungsi HTTP request yang kompatibel banyak executor
-local function req(url, body)
-    local payload = game:GetService("HttpService"):JSONEncode(body)
-    if request then
-        return request({Url=url, Method="POST", Headers={["Content-Type"]="application/json"}, Body=payload}).Body
-    elseif syn and syn.request then
-        return syn.request({Url=url, Method="POST", Headers={["Content-Type"]="application/json"}, Body=payload}).Body
-    elseif http_request then
-        return http_request({Url=url, Method="POST", Headers={["Content-Type"]="application/json"}, Body=payload}).Body
-    else
-        error("[Key] Executor tidak mendukung HTTP request")
-    end
-end
-
--- kumpulkan identitas
-local ok, hwid = pcall(function()
-    if gethwid then return gethwid() end
-    if syn and syn.get_hwid then return syn.get_hwid() end
-    return game:GetService("RbxAnalyticsService"):GetClientId()
-end)
-if not ok then hwid = "unknown" end
-
-local player = game:GetService("Players").LocalPlayer
-
--- kirim ke server key
-local body = {
-    key     = getgenv().script_key,
-    hwid    = hwid,
-    userid  = player.UserId,
-    username= player.Name,
-    placeid = game.PlaceId,
+    -- ===== TAMBAHIN SENDIRI DI SINI =====
+    -- [PLACEID] = "LINK_RAW_SCRIPT",
 }
 
-local ok2, response = pcall(req, BASE .. "/verify", body)
-if not ok2 or not response then
-    warn("[Key] Gagal menghubungi server key: " .. tostring(response))
+-- Jangan diubah di bawah sini
+local url = scripts[game.PlaceId]
+
+if not url then
+    warn("[Loader] Game ini belum didukung. PlaceId: " .. game.PlaceId)
     return
 end
 
-local data = game:GetService("HttpService"):JSONDecode(response)
-if not data.ok then
-    warn("[Key] " .. (data.message or "Key nya busuk woy!"))
-    return
-end
+local ok, err = pcall(function()
+    loadstring(game:HttpGet(url))()
+end)
 
--- jalankan payload dari server
-local fn = loadstring(data.payload)
-if not fn then
-    warn("[Key] Payload dari server tidak valid")
-    return
+if not ok then
+    warn("[Loader] Error: " .. tostring(err))
 end
-fn()
