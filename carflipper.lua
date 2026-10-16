@@ -1,6 +1,6 @@
 --[[ 
-    Vura | Car Flipper Ultimate Hub (Redesigned UI)
-    Theme: Modern Dark Clay / Cyber Purple
+    ⚡ VURA | CAR FLIPPER RGB PREMIUM HUB ⚡
+    Fitur: Animated RGB Border, Roll-Up Minimize, 100% Original Logic + Safety Warning
 ]]
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -9,12 +9,12 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
 local player = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui", 10)
 
--- Hapus GUI lama jika ada
-if PlayerGui:FindFirstChild("CarFlipperUltimateFixedHub") then
-    PlayerGui.CarFlipperUltimateFixedHub:Destroy()
+if PlayerGui:FindFirstChild("VuraRgbHub") then
+    PlayerGui.VuraRgbHub:Destroy()
 end
 
 -- ===== DATABASE MOBIL (RARITY) =====
@@ -60,29 +60,22 @@ local carRarity = {
 }
 
 local function getRarity(carName)
-    if carName and carRarity[carName] ~= nil then
-        return carRarity[carName]
-    end
+    if carName and carRarity[carName] ~= nil then return carRarity[carName] end
     return nil
 end
 
 local function getCarNameFromSlot(slotId)
-    local playerData = player:FindFirstChild("PlayerData") or ReplicatedStorage:FindFirstChild("PlayerData")
-    if playerData then
-        local cars = playerData:FindFirstChild("Cars") 
-            or playerData:FindFirstChild("Inventory") 
-            or playerData:FindFirstChild("Garage")
+    local pd = player:FindFirstChild("PlayerData") or ReplicatedStorage:FindFirstChild("PlayerData")
+    if pd then
+        local cars = pd:FindFirstChild("Cars") or pd:FindFirstChild("Inventory") or pd:FindFirstChild("Garage")
         if cars and cars:FindFirstChild(tostring(slotId)) then
-            local carObj = cars[tostring(slotId)]
-            local nameVal = carObj:FindFirstChild("CarName") or carObj:FindFirstChild("Name")
-            if nameVal and nameVal:IsA("StringValue") then
-                return nameVal.Value
-            elseif carObj:IsA("StringValue") then
-                return carObj.Value
-            end
+            local cObj = cars[tostring(slotId)]
+            local nVal = cObj:FindFirstChild("CarName") or cObj:FindFirstChild("Name")
+            if nVal and nVal:IsA("StringValue") then return nVal.Value
+            elseif cObj:IsA("StringValue") then return cObj.Value end
         end
     end
-
+    
     local runtimeGui = player.PlayerGui:FindFirstChild("RuntimeGui")
     local carList = runtimeGui and runtimeGui:FindFirstChild("Guis") 
         and runtimeGui.Guis:FindFirstChild("Garage") 
@@ -91,14 +84,11 @@ local function getCarNameFromSlot(slotId)
         and runtimeGui.Guis.Garage.MainFrame.GridFrame.GridFrame:FindFirstChild("CarList")
     if carList and carList:FindFirstChild(tostring(slotId)) then
         local label = carList[tostring(slotId)]:FindFirstChildWhichIsA("TextLabel", true)
-        if label and label.Text ~= "" then
-            return label.Text
-        end
+        if label and label.Text ~= "" then return label.Text end
     end
     return nil
 end
 
--- State Filters
 local buyFilter = {[0]=false, [1]=false, [2]=false, [3]=false, [4]=false, [5]=false}
 local sellFilter = {[0]=false, [1]=false, [2]=false, [3]=false}
 
@@ -108,385 +98,337 @@ local RemoteBuyCar    = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("
 local RemoteRollCard  = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Junkyard"):WaitForChild("Roll")
 local RemoteSellCar   = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Garage"):WaitForChild("SellCar")
 
--- ===== UI STYLING HELPERS =====
-local function applyCorner(inst, radius)
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, radius or 8)
-    corner.Parent = inst
-    return corner
-end
-
-local function applyStroke(inst, color, thickness)
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = color or Color3.fromRGB(140, 80, 255)
-    stroke.Thickness = thickness or 1.5
-    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    stroke.Parent = inst
-    return stroke
-end
-
-local function applyGradient(inst, col1, col2, rotation)
-    local grad = Instance.new("UIGradient")
-    grad.Color = ColorSequence.new{
-        ColorSequenceKeypoint.new(0, col1 or Color3.fromRGB(35, 25, 55)),
-        ColorSequenceKeypoint.new(1, col2 or Color3.fromRGB(15, 12, 22))
-    }
-    grad.Rotation = rotation or 45
-    grad.Parent = inst
-    return grad
-end
-
-local function createStyledButton(parent, text, pos, size, bgCol)
-    local btn = Instance.new("TextButton")
-    btn.Size = size
-    btn.Position = pos
-    btn.BackgroundColor3 = bgCol or Color3.fromRGB(32, 28, 48)
-    btn.Font = Enum.Font.GothamBold
-    btn.TextColor3 = Color3.fromRGB(240, 240, 255)
-    btn.Text = text
-    btn.TextSize = 11
-    btn.AutoButtonColor = true
-    btn.Parent = parent
-    applyCorner(btn, 6)
-    applyStroke(btn, Color3.fromRGB(70, 60, 100), 1)
-    
-    btn.MouseEnter:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(48, 42, 70)}):Play()
-    end)
-    btn.MouseLeave:Connect(function()
-        TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = bgCol or Color3.fromRGB(32, 28, 48)}):Play()
-    end)
-    
-    return btn
-end
-
--- ===== BUILD MAIN UI =====
+-- ===== UI CORE & STYLING =====
 local ScreenGui = Instance.new("ScreenGui", PlayerGui)
-ScreenGui.Name = "CarFlipperUltimateFixedHub"
+ScreenGui.Name = "VuraRgbHub"
 ScreenGui.ResetOnSpawn = false
 
--- Floating Toggle Button (Sangat rapi di pojok kiri atas)
-local ToggleUIBtn = Instance.new("TextButton", ScreenGui)
-ToggleUIBtn.Size = UDim2.new(0, 110, 0, 32)
-ToggleUIBtn.Position = UDim2.new(0, 15, 0, 15)
-ToggleUIBtn.BackgroundColor3 = Color3.fromRGB(24, 20, 36)
-ToggleUIBtn.Font = Enum.Font.GothamBlack
-ToggleUIBtn.Text = "⚡ HBM HUB"
-ToggleUIBtn.TextColor3 = Color3.fromRGB(180, 120, 255)
-ToggleUIBtn.TextSize = 12
-applyCorner(ToggleUIBtn, 8)
-applyStroke(ToggleUIBtn, Color3.fromRGB(140, 80, 255), 1.5)
+-- Tombol Toggle
+local ToggleBtn = Instance.new("TextButton", ScreenGui)
+ToggleBtn.Size = UDim2.new(0, 110, 0, 32)
+ToggleBtn.Position = UDim2.new(0, 15, 0, 15)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+ToggleBtn.Font = Enum.Font.GothamBlack
+ToggleBtn.Text = "⚡ VURA RGB"
+ToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ToggleBtn.TextSize = 12
+Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0, 8)
+local ToggleStroke = Instance.new("UIStroke", ToggleBtn)
+ToggleStroke.Thickness = 2
+ToggleStroke.Color = Color3.fromRGB(0, 255, 150)
 
--- Main Frame (Panel Utama)
+-- Main Frame Panel
 local MainFrame = Instance.new("Frame", ScreenGui)
-MainFrame.Size = UDim2.new(0, 460, 0, 340)
-MainFrame.Position = UDim2.new(0.5, -230, 0.5, -170)
-MainFrame.BackgroundColor3 = Color3.fromRGB(18, 15, 26)
+MainFrame.Size = UDim2.new(0, 440, 0, 270)
+MainFrame.Position = UDim2.new(0.5, -220, 0.5, -135)
+MainFrame.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
 MainFrame.Active = true
 MainFrame.Draggable = true
 MainFrame.ClipsDescendants = true
-applyCorner(MainFrame, 12)
-applyStroke(MainFrame, Color3.fromRGB(140, 80, 255), 2)
-applyGradient(MainFrame, Color3.fromRGB(32, 22, 50), Color3.fromRGB(12, 10, 18), 45)
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 
-ToggleUIBtn.MouseButton1Click:Connect(function()
-    MainFrame.Visible = not MainFrame.Visible
+-- ANIMATED RGB BORDER
+local RgbStroke = Instance.new("UIStroke", MainFrame)
+RgbStroke.Thickness = 2.5
+local RgbGradient = Instance.new("UIGradient", RgbStroke)
+RgbGradient.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 0, 0)),
+    ColorSequenceKeypoint.new(0.16, Color3.fromRGB(255, 255, 0)),
+    ColorSequenceKeypoint.new(0.33, Color3.fromRGB(0, 255, 0)),
+    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(0, 255, 255)),
+    ColorSequenceKeypoint.new(0.66, Color3.fromRGB(0, 0, 255)),
+    ColorSequenceKeypoint.new(0.83, Color3.fromRGB(255, 0, 255)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 0, 0))
+})
+RunService.RenderStepped:Connect(function()
+    RgbGradient.Rotation = (RgbGradient.Rotation + 2) % 360
 end)
 
--- Header / Top Bar
+-- TEXTURE GRID
+local GridPattern = Instance.new("ImageLabel", MainFrame)
+GridPattern.Size = UDim2.new(1, 0, 1, 0)
+GridPattern.BackgroundTransparency = 1
+GridPattern.Image = "rbxassetid://4743439972"
+GridPattern.ImageTransparency = 0.90
+GridPattern.ScaleType = Enum.ScaleType.Tile
+GridPattern.TileSize = UDim2.new(0, 40, 0, 40)
+Instance.new("UICorner", GridPattern).CornerRadius = UDim.new(0, 10)
+
+local Glow = Instance.new("ImageLabel", MainFrame)
+Glow.Size = UDim2.new(1, 0, 1, 0)
+Glow.BackgroundTransparency = 1
+Glow.Image = "rbxassetid://5028857084"
+Glow.ImageColor3 = Color3.fromRGB(100, 0, 255)
+Glow.ImageTransparency = 0.8
+Glow.ZIndex = 0
+
+-- Header
 local Header = Instance.new("Frame", MainFrame)
-Header.Size = UDim2.new(1, 0, 0, 40)
+Header.Size = UDim2.new(1, 0, 0, 35)
 Header.BackgroundTransparency = 1
 
 local Title = Instance.new("TextLabel", Header)
-Title.Size = UDim2.new(0.7, 0, 1, 0)
-Title.Position = UDim2.new(0.04, 0, 0, 0)
+Title.Size = UDim2.new(0.6, 0, 1, 0)
+Title.Position = UDim2.new(0.03, 0, 0, 0)
 Title.BackgroundTransparency = 1
 Title.Font = Enum.Font.GothamBlack
-Title.Text = "HBM | Car Flipper Hub"
-Title.TextColor3 = Color3.fromRGB(240, 240, 255)
-Title.TextSize = 14
+Title.Text = "⚡ VURA | RGB Auto Flipper"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.TextSize = 13
 Title.TextXAlignment = Enum.TextXAlignment.Left
 
+-- Minimize (Roll-up)
+local MinBtn = Instance.new("TextButton", Header)
+MinBtn.Size = UDim2.new(0, 24, 0, 24)
+MinBtn.Position = UDim2.new(1, -55, 0, 5)
+MinBtn.BackgroundColor3 = Color3.fromRGB(220, 150, 40)
+MinBtn.Font = Enum.Font.GothamBlack
+MinBtn.Text = "-"
+MinBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+MinBtn.TextSize = 14
+Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0, 6)
+
 local CloseBtn = Instance.new("TextButton", Header)
-CloseBtn.Size = UDim2.new(0, 26, 0, 26)
-CloseBtn.Position = UDim2.new(1, -34, 0, 7)
-CloseBtn.BackgroundColor3 = Color3.fromRGB(180, 45, 55)
+CloseBtn.Size = UDim2.new(0, 24, 0, 24)
+CloseBtn.Position = UDim2.new(1, -28, 0, 5)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 60)
 CloseBtn.Font = Enum.Font.GothamBlack
 CloseBtn.Text = "X"
 CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-CloseBtn.TextSize = 12
-applyCorner(CloseBtn, 6)
+CloseBtn.TextSize = 11
+Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 6)
 
-CloseBtn.MouseButton1Click:Connect(function()
-    MainFrame.Visible = false
-end)
+local Line = Instance.new("Frame", MainFrame)
+Line.Size = UDim2.new(1, 0, 0, 1)
+Line.Position = UDim2.new(0, 0, 0, 35)
+Line.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+Line.BackgroundTransparency = 0.85
 
-local HeaderLine = Instance.new("Frame", MainFrame)
-HeaderLine.Size = UDim2.new(0.92, 0, 0, 1)
-HeaderLine.Position = UDim2.new(0.04, 0, 0, 40)
-HeaderLine.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-HeaderLine.BackgroundTransparency = 0.85
+-- Logic Animasi Minimize
+local isMinimized = false
+local openSize = UDim2.new(0, 440, 0, 270)
+local minSize = UDim2.new(0, 440, 0, 35)
 
--- Sidebar Navigation (Tabs)
+local function toggleMinimize()
+    isMinimized = not isMinimized
+    local targetSize = isMinimized and minSize or openSize
+    TweenService:Create(MainFrame, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Size = targetSize}):Play()
+end
+
+MinBtn.MouseButton1Click:Connect(toggleMinimize)
+ToggleBtn.MouseButton1Click:Connect(toggleMinimize)
+CloseBtn.MouseButton1Click:Connect(function() ScreenGui:Destroy() end)
+
+-- Sidebar
 local Sidebar = Instance.new("Frame", MainFrame)
-Sidebar.Size = UDim2.new(0, 130, 1, -50)
-Sidebar.Position = UDim2.new(0, 12, 0, 46)
+Sidebar.Size = UDim2.new(0, 120, 1, -45)
+Sidebar.Position = UDim2.new(0, 10, 0, 40)
 Sidebar.BackgroundTransparency = 1
-
 local SidebarLayout = Instance.new("UIListLayout", Sidebar)
-SidebarLayout.Padding = UDim.new(0, 6)
+SidebarLayout.Padding = UDim.new(0, 5)
 
 -- Content Area
 local ContentContainer = Instance.new("Frame", MainFrame)
-ContentContainer.Size = UDim2.new(1, -160, 1, -55)
-ContentContainer.Position = UDim2.new(0, 148, 0, 46)
+ContentContainer.Size = UDim2.new(1, -145, 1, -45)
+ContentContainer.Position = UDim2.new(0, 135, 0, 40)
 ContentContainer.BackgroundTransparency = 1
 
--- Page Frames (Tabs)
-local pages = {}
-local tabButtons = {}
+local function createButton(parent, text, height, bgCol)
+    local btn = Instance.new("TextButton", parent)
+    btn.Size = UDim2.new(1, -5, 0, height or 30)
+    btn.BackgroundColor3 = bgCol or Color3.fromRGB(25, 25, 35)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextColor3 = Color3.fromRGB(230, 230, 245)
+    btn.Text = text
+    btn.TextSize = 11
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    Instance.new("UIStroke", btn).Color = Color3.fromRGB(60, 60, 80)
+    return btn
+end
 
+local pages, tabButtons = {}, {}
 local function createPage(name)
     local page = Instance.new("ScrollingFrame", ContentContainer)
     page.Size = UDim2.new(1, 0, 1, 0)
     page.BackgroundTransparency = 1
     page.BorderSizePixel = 0
-    page.ScrollBarThickness = 3
-    page.ScrollBarImageColor3 = Color3.fromRGB(140, 80, 255)
+    page.ScrollBarThickness = 2
     page.Visible = false
-    page.CanvasSize = UDim2.new(0, 0, 0, 0)
-    page.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    
     local layout = Instance.new("UIListLayout", page)
-    layout.Padding = UDim.new(0, 6)
-    
+    layout.Padding = UDim.new(0, 5)
     pages[name] = page
 
-    local btn = createStyledButton(Sidebar, name, UDim2.new(), UDim2.new(1, 0, 0, 32), Color3.fromRGB(26, 22, 40))
+    local btn = createButton(Sidebar, name, 32, Color3.fromRGB(20, 20, 28))
     tabButtons[name] = btn
 
     btn.MouseButton1Click:Connect(function()
-        for pName, pFrame in pairs(pages) do
-            local isTarget = (pName == name)
-            pFrame.Visible = isTarget
-            tabButtons[pName].BackgroundColor3 = isTarget and Color3.fromRGB(110, 60, 200) or Color3.fromRGB(26, 22, 40)
+        for n, p in pairs(pages) do
+            p.Visible = (n == name)
+            tabButtons[n].BackgroundColor3 = (n == name) and Color3.fromRGB(90, 40, 180) or Color3.fromRGB(20, 20, 28)
         end
     end)
-
     return page
 end
 
-local pageMain = createPage("⚡ Main Actions")
-local pageBuy = createPage("🛒 Buy Merchant")
-local pageSell = createPage("💰 Sell Filter")
-local pageTeleport = createPage("📍 Teleports")
+local pageMain = createPage("🚀 Main Menu")
+local pageBuy = createPage("🛒 Buy Setup")
+local pageSell = createPage("💰 Sell Setup")
+local pageTp = createPage("📍 Teleport")
 
--- Open default page
-pages["⚡ Main Actions"].Visible = true
-tabButtons["⚡ Main Actions"].BackgroundColor3 = Color3.fromRGB(110, 60, 200)
+pages["🚀 Main Menu"].Visible = true
+tabButtons["🚀 Main Menu"].BackgroundColor3 = Color3.fromRGB(90, 40, 180)
 
--- ===== PAGE 1: MAIN ACTIONS =====
-local btnAutoFarm = createStyledButton(pageMain, "[ SAFE AUTO FARM: OFF ]", UDim2.new(), UDim2.new(1, -6, 0, 36), Color3.fromRGB(120, 35, 45))
-local btnRepairAll = createStyledButton(pageMain, "🔧 REPAIR ALL CARS", UDim2.new(), UDim2.new(1, -6, 0, 34), Color3.fromRGB(35, 30, 55))
-local btnRollCard = createStyledButton(pageMain, "🎴 ROLL CARD (JUNKYARD)", UDim2.new(), UDim2.new(1, -6, 0, 34), Color3.fromRGB(35, 30, 55))
+-- ===== ISI PAGE 1: MAIN MENU =====
+local btnAutoFarm = createButton(pageMain, "[ SAFE AUTO FARM: OFF ]", 38, Color3.fromRGB(120, 30, 40))
+local btnRepairAll = createButton(pageMain, "🔧 REPAIR ALL CARS", 34)
+local btnRollCard = createButton(pageMain, "🎴 ROLL CARD (JUNKYARD)", 34)
 
--- ===== PAGE 2: BUY MERCHANT & FILTER =====
-local buyFilterHeader = Instance.new("TextLabel", pageBuy)
-buyFilterHeader.Size = UDim2.new(1, -6, 0, 20)
-buyFilterHeader.BackgroundTransparency = 1
-buyFilterHeader.Font = Enum.Font.GothamBold
-buyFilterHeader.Text = "Filter Rarity (Beli Automatic):"
-buyFilterHeader.TextColor3 = Color3.fromRGB(180, 180, 210)
-buyFilterHeader.TextSize = 10
-buyFilterHeader.TextXAlignment = Enum.TextXAlignment.Left
+-- ===== ISI PAGE 2: BUY SETUP =====
+local function makeLabel(parent, txt)
+    local l = Instance.new("TextLabel", parent)
+    l.Size = UDim2.new(1, -5, 0, 20)
+    l.BackgroundTransparency = 1
+    l.Font = Enum.Font.GothamBold
+    l.Text = txt
+    l.TextColor3 = Color3.fromRGB(180, 180, 200)
+    l.TextSize = 11
+    l.TextXAlignment = Enum.TextXAlignment.Left
+end
 
-local function makeBuyToggle(rarity, labelText)
-    local row = Instance.new("Frame", pageBuy)
-    row.Size = UDim2.new(1, -6, 0, 26)
-    row.BackgroundColor3 = Color3.fromRGB(25, 22, 38)
-    applyCorner(row, 6)
-
+makeLabel(pageBuy, "Filter Beli Otomatis:")
+local function makeToggle(parent, dict, key, label)
+    local row = Instance.new("Frame", parent)
+    row.Size = UDim2.new(1, -5, 0, 26)
+    row.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
+    
     local lbl = Instance.new("TextLabel", row)
-    lbl.Size = UDim2.new(0.65, 0, 1, 0)
-    lbl.Position = UDim2.new(0.04, 0, 0, 0)
+    lbl.Size = UDim2.new(0.6, 0, 1, 0)
+    lbl.Position = UDim2.new(0.05, 0, 0, 0)
     lbl.BackgroundTransparency = 1
     lbl.Font = Enum.Font.GothamMedium
-    lbl.Text = labelText
-    lbl.TextColor3 = Color3.fromRGB(220, 220, 240)
-    lbl.TextSize = 10
+    lbl.Text = label
+    lbl.TextColor3 = Color3.new(1,1,1)
+    lbl.TextSize = 11
     lbl.TextXAlignment = Enum.TextXAlignment.Left
 
-    local state = buyFilter[rarity]
-    local btn = createStyledButton(row, state and "ON" or "OFF", UDim2.new(0.7, 0, 0.15, 0), UDim2.new(0.26, 0, 0.7, 0),
-        state and Color3.fromRGB(40, 150, 70) or Color3.fromRGB(150, 45, 55))
-
+    local btn = createButton(row, dict[key] and "ON" or "OFF", 20, dict[key] and Color3.fromRGB(40,140,60) or Color3.fromRGB(140,40,50))
+    btn.Size = UDim2.new(0.3, 0, 0, 20)
+    btn.Position = UDim2.new(0.65, 0, 0.1, 0)
+    
     btn.MouseButton1Click:Connect(function()
-        buyFilter[rarity] = not buyFilter[rarity]
-        btn.Text = buyFilter[rarity] and "ON" or "OFF"
-        btn.BackgroundColor3 = buyFilter[rarity] and Color3.fromRGB(40, 150, 70) or Color3.fromRGB(150, 45, 55)
+        dict[key] = not dict[key]
+        btn.Text = dict[key] and "ON" or "OFF"
+        btn.BackgroundColor3 = dict[key] and Color3.fromRGB(40,140,60) or Color3.fromRGB(140,40,50)
     end)
 end
 
-makeBuyToggle(0, "Common (0)")
-makeBuyToggle(1, "Uncommon (1)")
-makeBuyToggle(2, "Rare (2)")
-makeBuyToggle(3, "Epic (3)")
-makeBuyToggle(4, "Legend (4)")
-makeBuyToggle(5, "Mythical (5)")
+makeToggle(pageBuy, buyFilter, 0, "Common (0)")
+makeToggle(pageBuy, buyFilter, 1, "Uncommon (1)")
+makeToggle(pageBuy, buyFilter, 2, "Rare (2)")
+makeToggle(pageBuy, buyFilter, 3, "Epic (3)")
+makeToggle(pageBuy, buyFilter, 4, "Legend (4)")
+makeToggle(pageBuy, buyFilter, 5, "Mythical (5)")
 
-local buyZonesHeader = Instance.new("TextLabel", pageBuy)
-buyZonesHeader.Size = UDim2.new(1, -6, 0, 24)
-buyZonesHeader.BackgroundTransparency = 1
-buyZonesHeader.Font = Enum.Font.GothamBold
-buyZonesHeader.Text = "Beli Manual Per Zone:"
-buyZonesHeader.TextColor3 = Color3.fromRGB(180, 180, 210)
-buyZonesHeader.TextSize = 10
-buyZonesHeader.TextXAlignment = Enum.TextXAlignment.Left
-
+makeLabel(pageBuy, "Beli Manual:")
 local zones = {"Junkyard", "LowTiers", "Auction", "Suburbs1", "Suburbs2", "Suburbs3", "Port"}
-
-local function buyFromMerchant(zone)
+local function buyFromZoneFunc(zone)
     if not RemoteBuyCar then return end
     local merchants = workspace:FindFirstChild("ActiveMerchants")
     if not merchants then return end
-
     for slot = 1, 40 do
-        local merchantName = nil
-        for _, merchantObj in ipairs(merchants:GetChildren()) do
-            for _, child in ipairs(merchantObj:GetChildren()) do
-                local prompt = child:FindFirstChild("MerchantPrompt", true)
-                if prompt 
-                    and prompt:GetAttribute("MerchantZone") == zone 
-                    and tostring(prompt:GetAttribute("MerchantId")) == tostring(slot) 
-                then
-                    merchantName = merchantObj.Name
-                    break
+        local mName = nil
+        for _, mObj in ipairs(merchants:GetChildren()) do
+            for _, ch in ipairs(mObj:GetChildren()) do
+                local p = ch:FindFirstChild("MerchantPrompt", true)
+                if p and p:GetAttribute("MerchantZone") == zone and tostring(p:GetAttribute("MerchantId")) == tostring(slot) then
+                    mName = mObj.Name; break
                 end
             end
-            if merchantName then break end
+            if mName then break end
         end
-
-        if merchantName then
-            local rarity = getRarity(merchantName)
-            if rarity and buyFilter[rarity] == true then
+        if mName then
+            local r = getRarity(mName)
+            if r and buyFilter[r] == true then
                 RemoteBuyCar:FireServer(zone, tostring(slot))
                 task.wait(0.01)
             end
         end
     end
 end
-
-for i, zone in ipairs(zones) do
-    local btnZone = createStyledButton(pageBuy, i .. ". Buy Cars (" .. zone .. ")", UDim2.new(), UDim2.new(1, -6, 0, 28), Color3.fromRGB(30, 26, 45))
-    btnZone.MouseButton1Click:Connect(function()
-        buyFromMerchant(zone)
-    end)
+for _, z in ipairs(zones) do
+    local b = createButton(pageBuy, "Buy " .. z, 28)
+    b.MouseButton1Click:Connect(function() buyFromZoneFunc(z) end)
 end
 
--- ===== PAGE 3: SELL FILTER & MODAL =====
-local sellFilterHeader = Instance.new("TextLabel", pageSell)
-sellFilterHeader.Size = UDim2.new(1, -6, 0, 20)
-sellFilterHeader.BackgroundTransparency = 1
-sellFilterHeader.Font = Enum.Font.GothamBold
-sellFilterHeader.Text = "Filter Rarity (Jual Automatic):"
-sellFilterHeader.TextColor3 = Color3.fromRGB(180, 180, 210)
-sellFilterHeader.TextSize = 10
-sellFilterHeader.TextXAlignment = Enum.TextXAlignment.Left
+-- ===== ISI PAGE 3: SELL SETUP & MODAL =====
+makeLabel(pageSell, "Filter Jual Otomatis:")
+makeToggle(pageSell, sellFilter, 0, "Common (0)")
+makeToggle(pageSell, sellFilter, 1, "Uncommon (1)")
+makeToggle(pageSell, sellFilter, 2, "Rare (2)")
+makeToggle(pageSell, sellFilter, 3, "Epic (3)")
 
-local function makeSellToggle(rarity, labelText)
-    local row = Instance.new("Frame", pageSell)
-    row.Size = UDim2.new(1, -6, 0, 26)
-    row.BackgroundColor3 = Color3.fromRGB(25, 22, 38)
-    applyCorner(row, 6)
+local btnClickSell = createButton(pageSell, "🔥 JUAL MOBIL FILTERED", 36, Color3.fromRGB(160, 50, 60))
 
-    local lbl = Instance.new("TextLabel", row)
-    lbl.Size = UDim2.new(0.65, 0, 1, 0)
-    lbl.Position = UDim2.new(0.04, 0, 0, 0)
-    lbl.BackgroundTransparency = 1
-    lbl.Font = Enum.Font.GothamMedium
-    lbl.Text = labelText
-    lbl.TextColor3 = Color3.fromRGB(220, 220, 240)
-    lbl.TextSize = 10
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-
-    local state = sellFilter[rarity]
-    local btn = createStyledButton(row, state and "ON" or "OFF", UDim2.new(0.7, 0, 0.15, 0), UDim2.new(0.26, 0, 0.7, 0),
-        state and Color3.fromRGB(40, 150, 70) or Color3.fromRGB(150, 45, 55))
-
-    btn.MouseButton1Click:Connect(function()
-        sellFilter[rarity] = not sellFilter[rarity]
-        btn.Text = sellFilter[rarity] and "ON" or "OFF"
-        btn.BackgroundColor3 = sellFilter[rarity] and Color3.fromRGB(40, 150, 70) or Color3.fromRGB(150, 45, 55)
-    end)
-end
-
-makeSellToggle(0, "Sell Common (0)")
-makeSellToggle(1, "Sell Uncommon (1)")
-makeSellToggle(2, "Sell Rare (2)")
-makeSellToggle(3, "Sell Epic (3)")
-
-local btnClickSell = createStyledButton(pageSell, "🔥 EXECUTE SELL FILTERED CARS", UDim2.new(), UDim2.new(1, -6, 0, 36), Color3.fromRGB(160, 45, 55))
-
--- Frame Warning Modal (Sell)
+-- PENGEMBALIAN FITUR WARNING MODAL
 local FrameWarning = Instance.new("Frame", ScreenGui)
-FrameWarning.Size = UDim2.new(0, 300, 0, 140)
-FrameWarning.Position = UDim2.new(0.5, -150, 0.5, -70)
-FrameWarning.BackgroundColor3 = Color3.fromRGB(20, 16, 28)
+FrameWarning.Size = UDim2.new(0, 280, 0, 130)
+FrameWarning.Position = UDim2.new(0.5, -140, 0.5, -65)
+FrameWarning.BackgroundColor3 = Color3.fromRGB(20, 10, 15)
 FrameWarning.Active = true
 FrameWarning.Draggable = true
 FrameWarning.Visible = false
-applyCorner(FrameWarning, 12)
-applyStroke(FrameWarning, Color3.fromRGB(220, 60, 70), 2)
+Instance.new("UICorner", FrameWarning).CornerRadius = UDim.new(0, 8)
+local WarnStroke = Instance.new("UIStroke", FrameWarning)
+WarnStroke.Color = Color3.fromRGB(255, 0, 0)
+WarnStroke.Thickness = 2
+
+-- RGB untuk frame warning (biar dapet kesan bahaya neon)
+local WarnGrad = Instance.new("UIGradient", WarnStroke)
+WarnGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 0, 0)),
+    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 100, 0)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 0, 0))
+})
+RunService.RenderStepped:Connect(function() WarnGrad.Rotation = (WarnGrad.Rotation + 3) % 360 end)
 
 local WarningText = Instance.new("TextLabel", FrameWarning)
 WarningText.Size = UDim2.new(0.9, 0, 0, 45)
-WarningText.Position = UDim2.new(0.05, 0, 0, 12)
+WarningText.Position = UDim2.new(0.05, 0, 0, 10)
 WarningText.BackgroundTransparency = 1
-WarningText.TextColor3 = Color3.fromRGB(240, 240, 255)
-WarningText.Font = Enum.Font.GothamMedium
+WarningText.TextColor3 = Color3.fromRGB(255, 200, 200)
+WarningText.Font = Enum.Font.Code
 WarningText.TextSize = 11
 WarningText.TextWrapped = true
-WarningText.Text = "Buka garasi kamu sekarang! Jika tidak, mobil Mythical berisiko terhapus/terjual."
+WarningText.Text = "Open gara your PLS :( if not car Mythical will sell"
 
-local btnOpenGarage = createStyledButton(FrameWarning, "Buka Garasi", UDim2.new(0.05, 0, 0, 70), UDim2.new(0.42, 0, 0, 35), Color3.fromRGB(80, 30, 40))
-local btnConfirmSell = createStyledButton(FrameWarning, "Tetap Jual", UDim2.new(0.53, 0, 0, 70), UDim2.new(0.42, 0, 0, 35), Color3.fromRGB(40, 130, 65))
+local btnOpenGarage = createButton(FrameWarning, "forgetten I'll open", 35, Color3.fromRGB(80, 20, 20))
+btnOpenGarage.Size = UDim2.new(0.42, 0, 0, 35)
+btnOpenGarage.Position = UDim2.new(0.05, 0, 0, 75)
+
+local btnConfirmSell = createButton(FrameWarning, "yeh sell car", 35, Color3.fromRGB(20, 80, 20))
+btnConfirmSell.Size = UDim2.new(0.42, 0, 0, 35)
+btnConfirmSell.Position = UDim2.new(0.53, 0, 0, 75)
 
 local function sellFilteredCars()
     if not RemoteSellCar then return end
-    for slot = 1, 40 do
-        local carName = getCarNameFromSlot(slot)
-        if carName then
-            local rarity = getRarity(carName)
-            if rarity ~= nil and sellFilter[rarity] == true then
-                RemoteSellCar:FireServer(tostring(slot))
+    for s = 1, 40 do
+        local n = getCarNameFromSlot(s)
+        if n then
+            local r = getRarity(n)
+            if r ~= nil and sellFilter[r] == true then
+                RemoteSellCar:FireServer(tostring(s))
                 task.wait(0.02)
             end
         end
     end
 end
 
-local function sellLowTiers()
-    if not RemoteSellCar then return end
-    for slot = 1, 40 do
-        local carName = getCarNameFromSlot(slot)
-        if carName then
-            local rarity = getRarity(carName)
-            if rarity == 0 or rarity == 1 or rarity == 2 then
-                RemoteSellCar:FireServer(tostring(slot))
-                task.wait(0.02)
-            end
-        end
-    end
-end
-
-btnClickSell.MouseButton1Click:Connect(function()
-    FrameWarning.Visible = true
-end)
+btnClickSell.MouseButton1Click:Connect(function() FrameWarning.Visible = true end)
 
 btnOpenGarage.MouseButton1Click:Connect(function()
     FrameWarning.Visible = false
-    local runtimeGui = PlayerGui:FindFirstChild("RuntimeGui")
+    local runtimeGui = player.PlayerGui:FindFirstChild("RuntimeGui")
     local garageBtn = runtimeGui and runtimeGui:FindFirstChild("SideBar") and runtimeGui.SideBar:FindFirstChild("Garage")
     if garageBtn and getconnections then
         for _, conn in ipairs(getconnections(garageBtn.Activated)) do conn:Fire() end
@@ -499,100 +441,84 @@ btnConfirmSell.MouseButton1Click:Connect(function()
     sellFilteredCars()
 end)
 
--- ===== PAGE 4: TELEPORTS =====
-local function teleportTo(x, y, z)
-    if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-        local hrp = player.Character.HumanoidRootPart
-        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-        hrp.CFrame = CFrame.new(x, y + 3, z)
-    end
-end
-
-local teleportSpots = {
-    {name="Suburbs 1", x=-2403, y=5,   z=223},
-    {name="Suburbs 2", x=-142,  y=-25, z=952},
-    {name="Suburbs 3", x=1863,  y=5,   z=-534},
+-- ===== ISI PAGE 4: TELEPORTS =====
+local tpSpots = {
+    {name="Suburbs 1", x=-2403, y=5, z=223},
+    {name="Suburbs 2", x=-142, y=-25, z=952},
+    {name="Suburbs 3", x=1863, y=5, z=-534},
 }
-
-for i, spot in ipairs(teleportSpots) do
-    local btnTp = createStyledButton(pageTeleport, i .. ". Teleport ke " .. spot.name, UDim2.new(), UDim2.new(1, -6, 0, 32), Color3.fromRGB(30, 45, 40))
-    btnTp.MouseButton1Click:Connect(function()
-        teleportTo(spot.x, spot.y, spot.z)
+for _, sp in ipairs(tpSpots) do
+    local b = createButton(pageTp, "Tp " .. sp.name, 32)
+    b.MouseButton1Click:Connect(function()
+        local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            hrp.AssemblyLinearVelocity = Vector3.new(0,0,0)
+            hrp.CFrame = CFrame.new(sp.x, sp.y + 3, sp.z)
+        end
     end)
 end
 
--- ===== FUNGSI OTOMATISASI KELAS KAKAP =====
-local function buyAllFromZone(zone)
-    if not RemoteBuyCar then return end
-    local merchants = workspace:FindFirstChild("ActiveMerchants")
-    if merchants then
-        for slot = 1, 40 do
-            RemoteBuyCar:FireServer(zone, tostring(slot))
-            task.wait(0.01)
-        end
-    end
-end
+-- ===== AUTO FARM LOGIC =====
+local autoActive = false
 
-local function repairAllCars()
+local function repairAll()
     if not RemoteFixCar then return end
-    for slot = 1, 40 do
-        for _ = 1, 15 do
-            RemoteFixCar:FireServer(tostring(slot))
-        end
+    for s = 1, 40 do
+        for _ = 1, 15 do RemoteFixCar:FireServer(tostring(s)) end
         task.wait(0.01)
     end
 end
-
-btnRepairAll.MouseButton1Click:Connect(repairAllCars)
+btnRepairAll.MouseButton1Click:Connect(repairAll)
 
 btnRollCard.MouseButton1Click:Connect(function()
     if RemoteRollCard then
-        for i = 1, 20 do
-            RemoteRollCard:FireServer(tostring(i))
-            task.wait(0.02)
-        end
+        for i = 1, 20 do RemoteRollCard:FireServer(tostring(i)); task.wait(0.02) end
     end
 end)
 
--- ===== SAFE AUTO FARM LOOP =====
-local autoFarmActive = false
-
-local function autoFarmLoop()
-    while autoFarmActive do
-        for _, zone in ipairs(zones) do
-            if not autoFarmActive then break end
-            buyAllFromZone(zone)
-            task.wait(0.1)
+local function sellLow()
+    if not RemoteSellCar then return end
+    for s = 1, 40 do
+        local n = getCarNameFromSlot(s)
+        if n then
+            local r = getRarity(n)
+            if r == 0 or r == 1 or r == 2 then
+                RemoteSellCar:FireServer(tostring(s)); task.wait(0.02)
+            end
         end
-        
-        if autoFarmActive then
-            repairAllCars()
-            task.wait(0.2)
-        end
-        
-        if autoFarmActive then
-            sellLowTiers()
-            task.wait(0.2)
-        end
-        task.wait(0.5)
     end
 end
 
-btnAutoFarm.MouseButton1Click:Connect(function()
-    autoFarmActive = not autoFarmActive
-    if autoFarmActive then
-        btnAutoFarm.Text = "[ SAFE AUTO FARM: ON ]"
-        btnAutoFarm.BackgroundColor3 = Color3.fromRGB(40, 150, 70)
-        task.spawn(autoFarmLoop)
-    else
-        btnAutoFarm.Text = "[ SAFE AUTO FARM: OFF ]"
-        btnAutoFarm.BackgroundColor3 = Color3.fromRGB(150, 45, 55)
+task.spawn(function()
+    while task.wait(0.5) do
+        if autoActive then
+            for _, z in ipairs(zones) do
+                if not autoActive then break end
+                -- Mengambil fungsi asli buyAllFromZone(zone) tanpa filter rarity
+                if RemoteBuyCar then
+                    for s = 1, 40 do RemoteBuyCar:FireServer(z, tostring(s)); task.wait(0.01) end
+                end
+            end
+            if autoActive then repairAll(); task.wait(0.2) end
+            if autoActive then sellLow(); task.wait(0.2) end
+        end
     end
 end)
 
--- Hotkey LeftControl
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if not gameProcessed and input.KeyCode == Enum.KeyCode.LeftControl then
+btnAutoFarm.MouseButton1Click:Connect(function()
+    autoActive = not autoActive
+    if autoActive then
+        btnAutoFarm.Text = "[ SAFE AUTO FARM: ON ]"
+        btnAutoFarm.BackgroundColor3 = Color3.fromRGB(40, 160, 70)
+    else
+        btnAutoFarm.Text = "[ SAFE AUTO FARM: OFF ]"
+        btnAutoFarm.BackgroundColor3 = Color3.fromRGB(120, 30, 40)
+    end
+end)
+
+-- Toggle On/Off via Ctrl
+UserInputService.InputBegan:Connect(function(input, gp)
+    if not gp and input.KeyCode == Enum.KeyCode.LeftControl then
         MainFrame.Visible = not MainFrame.Visible
         if not MainFrame.Visible then
             FrameWarning.Visible = false
