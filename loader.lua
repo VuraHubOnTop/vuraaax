@@ -5,7 +5,7 @@
 
 local scripts = {
     -- ===== GAME YANG UDAH DIISI PLACEID =====
-    [121864768012064] = "LINK_RAW_SCRIPT_FISH_IT",           -- Fish It
+    [121864768012064] = "https://raw.githubusercontent.com/ballsmarkettreal-cyber/vuraaax/refs/heads/main/fish",           -- Fish It
     [136533956395153] = "LINK_RAW_SCRIPT_CAR_FLIPPER",       -- Car Flipper
     [15494065142]     = "LINK_RAW_SCRIPT_CLICK_A_ROCK",      -- Click A Rock
     [13284033561]     = "LINK_RAW_SCRIPT_FISHING_FRENZY",    -- Fishing Frenzy Simulator
