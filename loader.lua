@@ -17,6 +17,7 @@ local scripts = {
     [7449423635]      = "LINK_RAW_SCRIPT_BLOX_FRUITS_3",     -- Blox Fruits (Sea 3)
     [124216119978534] = "https://raw.githubusercontent.com/VuraHubOnTop/vuraaax/refs/heads/main/gamelist/RideAPet.lua",
     [107778070777162] = "https://raw.githubusercontent.com/VuraHubOnTop/vuraaax/refs/heads/main/gamelist/StealAnEgg.lua",
+    [89469502395769]  = " https://raw.githubusercontent.com/VuraHubOnTop/vuraaax/refs/heads/main/gamelist/KickALuckyBlock.lua",
     
     -- ===== TAMBAHIN SENDIRI DI SINI =====
     -- [PLACEID] = "LINK_RAW_SCRIPT",
