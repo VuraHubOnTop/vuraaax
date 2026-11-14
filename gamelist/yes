@@ -1,0 +1,104 @@
+-- ============================================================
+-- SCRIPT: Steal an Egg - Instant Fishing + Teleport (Delta)
+-- Basis: Sena Hub (Open Source, Keyless)
+-- ============================================================
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+
+-- === KONFIGURASI LOKASI MANCING ===
+-- Ganti koordinat ini dengan posisi area mancing yang kamu inginkan
+local FISHING_SPOT = Vector3.new(0, 0, 0) -- Contoh: Vector3.new(100, 10, -50)
+
+-- === FUNGSI TELEPORT ===
+local function teleportToFishingSpot()
+    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        LocalPlayer.Character.HumanoidRootPart.CFrame = CFrame.new(FISHING_SPOT)
+        print("[Delta] Teleported to fishing spot.")
+    else
+        warn("[Delta] Character not ready.")
+    end
+end
+
+-- === FUNGSI INSTANT FISHING ===
+-- Mencoba mengirim remote event yang umum digunakan untuk memancing
+local function instantFish()
+    -- Cari remote event yang berkaitan dengan fishing
+    local remoteNames = {"Fish", "Fishing", "CatchFish", "Reel", "Cast"}
+    local foundRemote = nil
+
+    for _, remoteName in ipairs(remoteNames) do
+        local remote = ReplicatedStorage:FindFirstChild(remoteName, true)
+        if remote and remote:IsA("RemoteEvent") then
+            foundRemote = remote
+            break
+        end
+    end
+
+    if foundRemote then
+        -- Kirim remote event untuk memancing secara instan
+        foundRemote:FireServer()
+        print("[Delta] Instant fishing triggered via:", foundRemote:GetFullName())
+    else
+        warn("[Delta] Fishing remote not found. Trying alternative method...")
+        -- Metode alternatif: simulasikan input keyboard "E" (tombol default memancing)
+        local VirtualUser = game:GetService("VirtualUser")
+        VirtualUser:CaptureController()
+        VirtualUser:Button1Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+        VirtualUser:Button1Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+        print("[Delta] Simulated fishing input.")
+    end
+end
+
+-- === UI SEDERHANA ===
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "DeltaFishingUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local Frame = Instance.new("Frame")
+Frame.Size = UDim2.new(0, 200, 0, 150)
+Frame.Position = UDim2.new(0, 20, 0, 100)
+Frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+Frame.BorderSizePixel = 2
+Frame.BorderColor3 = Color3.fromRGB(0, 255, 0)
+Frame.Parent = ScreenGui
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 8)
+UICorner.Parent = Frame
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, 0, 0, 30)
+Title.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+Title.TextColor3 = Color3.fromRGB(0, 0, 0)
+Title.Text = "Fishing Hub (Delta)"
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 14
+Title.Parent = Frame
+
+local TeleportButton = Instance.new("TextButton")
+TeleportButton.Size = UDim2.new(0.9, 0, 0, 35)
+TeleportButton.Position = UDim2.new(0.05, 0, 0.3, 0)
+TeleportButton.BackgroundColor3 = Color3.fromRGB(50, 150, 255)
+TeleportButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+TeleportButton.Text = "Teleport ke Mancing"
+TeleportButton.Font = Enum.Font.GothamBold
+TeleportButton.TextSize = 14
+TeleportButton.Parent = Frame
+TeleportButton.MouseButton1Click:Connect(teleportToFishingSpot)
+
+local FishButton = Instance.new("TextButton")
+FishButton.Size = UDim2.new(0.9, 0, 0, 35)
+FishButton.Position = UDim2.new(0.05, 0, 0.6, 0)
+FishButton.BackgroundColor3 = Color3.fromRGB(255, 100, 50)
+FishButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+FishButton.Text = "Instant Fishing"
+FishButton.Font = Enum.Font.GothamBold
+FishButton.TextSize = 14
+FishButton.Parent = Frame
+FishButton.MouseButton1Click:Connect(instantFish)
+
+print("[Delta] Fishing UI Loaded.")
